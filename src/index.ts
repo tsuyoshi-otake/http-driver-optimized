@@ -19,6 +19,7 @@ import {
   compileBodyFetchWithContextType,
   compileService,
   compileUrlByService,
+  joinUrl,
   responseFormat,
 } from "./utils/index";
 
@@ -463,7 +464,7 @@ class Driver {
             );
           } else {
             // Use simple baseURL + endpoint concatenation (ignore any service versions)
-            fullUrl = `${this.config.baseURL}/${apiInfo.url}`;
+            fullUrl = joinUrl(this.config.baseURL, apiInfo.url);
           }
 
           if (payload && Object.keys(payload).length > 0 && apiInfo.methods === MethodAPI.get) {

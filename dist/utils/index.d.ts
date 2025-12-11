@@ -22,6 +22,14 @@ export declare function findServiceApi(services: ServiceApi[], idToFind: string)
  * @param {ServiceApi[]} services - The array of service configurations.
  * @returns {CompiledServiceInfo | null} - An object containing the compiled service URL, method, version, and options, or null if the service is not found.
  */
+/**
+ * Joins URL parts ensuring single slash between them.
+ * Preserves protocol:// if present in the first part.
+ *
+ * @param {...(string | undefined | null)[]} parts - URL parts to join
+ * @returns {string} - Joined URL
+ */
+export declare function joinUrl(...parts: (string | undefined | null)[]): string;
 export declare function compileService(idService: ServiceUrlCompile, services: ServiceApi[]): CompiledServiceInfo | null;
 /**
  * Builds URL with version injection based on configuration

@@ -106,6 +106,15 @@ Pattern: Convert transport/library-specific failures into first-class error obje
 
 Pattern: Consumers can implement token refresh strategies that buffer failed requests and replay them once a new token is issued.
 
+### 8) URL Safety
+- URL concatenation must always use the `joinUrl` utility to prevent double slashes.
+- This applies to:
+  - Base URL + Endpoint concatenation
+  - Version injection scenarios
+  - Any path joining operations
+
+Pattern: Never use simple string concatenation (`/`) for URL parts. Always use `joinUrl(...)` from [`src/utils/index.ts`](../src/utils/index.ts).
+
 ## Extensibility Points
 
 Driver configuration shape: [`interface DriverConfig`](../src/utils/driver-contracts.ts:34)

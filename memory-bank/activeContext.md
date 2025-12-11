@@ -3,13 +3,25 @@
 This file tracks the current focus, recent changes, decisions, next steps, and active considerations for the HttpDriver project.
 
 ## Current Focus
-- **COMPLETED**: Fixed all test failures and achieved 97.76% statement coverage
+- **COMPLETED**: Fixed double slash issue in URL compilation logic
+- **COMPLETED**: Fixed all test failures and achieved 97.58% statement coverage
 - **NEW ENHANCEMENTS**: Enhanced `execServiceByFetch` with comprehensive response type support
 - **LATEST**: Fixed ResponseFormat generic typing system to properly support TypeScript generics
 - Continue monitoring for any new issues and maintain high test coverage
-- All 185 tests now pass successfully
+- All 191 tests now pass successfully
 
 ## Recent Changes
+- **Double Slash Prevention (COMPLETED)**:
+  - **Problem**: URLs were being compiled with double slashes (e.g., `https://api.example.com//users`) when concatenating parts
+  - **Solution**: 
+    - Created `joinUrl` utility in [`src/utils/index.ts`](../src/utils/index.ts) that handles safe slash normalization
+    - Updated `compileUrlByService` and `buildUrlWithVersion` in [`src/utils/index.ts`](../src/utils/index.ts) to use `joinUrl`
+    - Updated `getInfoURL` in [`src/index.ts`](../src/index.ts) to use `joinUrl`
+  - **Tests**: Added comprehensive test suite in [`test/src/utils/double-slash.test.ts`](../test/src/utils/double-slash.test.ts) covering:
+    - Base URL + endpoint concatenation
+    - Version injection scenarios
+    - Edge cases with trailing/leading slashes
+
 - **Generic Type System Fix (COMPLETED)**:
   - **Problem**: `ResponseFormat<T>` interface was generic but method signatures always returned `ResponseFormat` (defaulting to `any`)
   - **Solution**: Updated `HttpDriverInstance` interface and method implementations to support generic types:
@@ -83,6 +95,7 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
   - Axios: [`execService()`](../src/index.ts:109)
   - Fetch: [`execServiceByFetch()`](../src/index.ts:164)
 - Body shaping guided by content type via [`compileBodyFetchWithContextType()`](../src/utils/index.ts:182).
+- **URL Safety**: Always use `joinUrl` from [`src/utils/index.ts`](../src/utils/index.ts) when concatenating URL parts to prevent double slashes.
 
 ## Decisions and Open Issues
 

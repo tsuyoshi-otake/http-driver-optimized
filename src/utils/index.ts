@@ -54,6 +54,23 @@ export function findServiceApi(
  * @param {ServiceApi[]} services - The array of service configurations.
  * @returns {CompiledServiceInfo | null} - An object containing the compiled service URL, method, version, and options, or null if the service is not found.
  */
+/**
+ * Joins URL parts ensuring single slash between them.
+ * Preserves protocol:// if present in the first part.
+ *
+ * @param {...(string | undefined | null)[]} parts - URL parts to join
+ * @returns {string} - Joined URL
+ */
+export function joinUrl(...parts: (string | undefined | null)[]): string {
+  const validParts = parts.filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
+  if (validParts.length === 0) return '';
+  
+  return validParts.reduce((acc, curr) => {
+    // Ensure strictly one slash between acc and curr
+    return acc.replace(/\/+$/, '') + '/' + curr.replace(/^\/+/, '');
+  }) as string;
+}
+
 export function compileService(
   idService: ServiceUrlCompile,
   services: ServiceApi[]
@@ -90,12 +107,12 @@ export function buildUrlWithVersion(
 ): string {
   // If version building is not enabled, return simple concatenation
   if (!versionConfig?.enabled) {
-    return `${baseURL}/${endpoint}`;
+    return joinUrl(baseURL, endpoint);
   }
 
   // If no version provided and version building is enabled, return simple concatenation
   if (!version) {
-    return `${baseURL}/${endpoint}`;
+    return joinUrl(baseURL, endpoint);
   }
 
   const config = versionConfig;
@@ -108,13 +125,13 @@ export function buildUrlWithVersion(
       // v1.example.com/endpoint
       const urlParts = baseURL.split('://');
       if (urlParts.length === 2) {
-        return `${urlParts[0]}://${versionString}.${urlParts[1]}/${endpoint}`;
+        return joinUrl(`${urlParts[0]}://${versionString}.${urlParts[1]}`, endpoint);
       }
-      return `${versionString}.${baseURL}/${endpoint}`;
+      return joinUrl(`${versionString}.${baseURL}`, endpoint);
 
     case 'before-endpoint':
       // baseURL/endpoint/v1
-      return `${baseURL}/${endpoint}/${versionString}`;
+      return joinUrl(baseURL, endpoint, versionString);
 
     case 'custom':
       if (config.template) {
@@ -129,7 +146,7 @@ export function buildUrlWithVersion(
     case 'after-base':
     default:
       // baseURL/v1/endpoint (most common pattern)
-      return `${baseURL}/${versionString}/${endpoint}`;
+      return joinUrl(baseURL, versionString, endpoint);
   }
 }
 
@@ -167,7 +184,7 @@ export function compileUrlByService(
       );
     } else {
       // Use simple baseURL + endpoint concatenation (ignore any service versions)
-      finalUrl = `${configServices.baseURL}/${apiInfo.url}`;
+      finalUrl = joinUrl(configServices.baseURL, apiInfo.url);
     }
     
     return compileUrl(

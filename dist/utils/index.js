@@ -70,7 +70,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
     }
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.removeNullValues = exports.httpClientFetch = exports.compileBodyFetchWithContextType = exports.compileUrl = exports.responseFormat = exports.compileUrlByService = exports.buildUrlWithVersion = exports.compileService = exports.findServiceApi = exports.replaceParamsInUrl = void 0;
+exports.removeNullValues = exports.httpClientFetch = exports.compileBodyFetchWithContextType = exports.compileUrl = exports.responseFormat = exports.compileUrlByService = exports.buildUrlWithVersion = exports.compileService = exports.joinUrl = exports.findServiceApi = exports.replaceParamsInUrl = void 0;
 var qs = __importStar(require("qs"));
 /**
  * Replaces placeholders in a URL with corresponding parameter values.
@@ -107,6 +107,27 @@ exports.findServiceApi = findServiceApi;
  * @param {ServiceApi[]} services - The array of service configurations.
  * @returns {CompiledServiceInfo | null} - An object containing the compiled service URL, method, version, and options, or null if the service is not found.
  */
+/**
+ * Joins URL parts ensuring single slash between them.
+ * Preserves protocol:// if present in the first part.
+ *
+ * @param {...(string | undefined | null)[]} parts - URL parts to join
+ * @returns {string} - Joined URL
+ */
+function joinUrl() {
+    var parts = [];
+    for (var _i = 0; _i < arguments.length; _i++) {
+        parts[_i] = arguments[_i];
+    }
+    var validParts = parts.filter(function (p) { return typeof p === 'string' && p.trim().length > 0; });
+    if (validParts.length === 0)
+        return '';
+    return validParts.reduce(function (acc, curr) {
+        // Ensure strictly one slash between acc and curr
+        return acc.replace(/\/+$/, '') + '/' + curr.replace(/^\/+/, '');
+    });
+}
+exports.joinUrl = joinUrl;
 function compileService(idService, services) {
     var _a, _b;
     var serviceExec = findServiceApi(services, idService.id);
@@ -134,11 +155,11 @@ exports.compileService = compileService;
 function buildUrlWithVersion(baseURL, endpoint, version, versionConfig) {
     // If version building is not enabled, return simple concatenation
     if (!(versionConfig === null || versionConfig === void 0 ? void 0 : versionConfig.enabled)) {
-        return "".concat(baseURL, "/").concat(endpoint);
+        return joinUrl(baseURL, endpoint);
     }
     // If no version provided and version building is enabled, return simple concatenation
     if (!version) {
-        return "".concat(baseURL, "/").concat(endpoint);
+        return joinUrl(baseURL, endpoint);
     }
     var config = versionConfig;
     var position = config.position || 'after-base';
@@ -149,12 +170,12 @@ function buildUrlWithVersion(baseURL, endpoint, version, versionConfig) {
             // v1.example.com/endpoint
             var urlParts = baseURL.split('://');
             if (urlParts.length === 2) {
-                return "".concat(urlParts[0], "://").concat(versionString, ".").concat(urlParts[1], "/").concat(endpoint);
+                return joinUrl("".concat(urlParts[0], "://").concat(versionString, ".").concat(urlParts[1]), endpoint);
             }
-            return "".concat(versionString, ".").concat(baseURL, "/").concat(endpoint);
+            return joinUrl("".concat(versionString, ".").concat(baseURL), endpoint);
         case 'before-endpoint':
             // baseURL/endpoint/v1
-            return "".concat(baseURL, "/").concat(endpoint, "/").concat(versionString);
+            return joinUrl(baseURL, endpoint, versionString);
         case 'custom':
             if (config.template) {
                 return config.template
@@ -167,7 +188,7 @@ function buildUrlWithVersion(baseURL, endpoint, version, versionConfig) {
         case 'after-base':
         default:
             // baseURL/v1/endpoint (most common pattern)
-            return "".concat(baseURL, "/").concat(versionString, "/").concat(endpoint);
+            return joinUrl(baseURL, versionString, endpoint);
     }
 }
 exports.buildUrlWithVersion = buildUrlWithVersion;
@@ -194,7 +215,7 @@ function compileUrlByService(configServices, idService, payload, options) {
         }
         else {
             // Use simple baseURL + endpoint concatenation (ignore any service versions)
-            finalUrl = "".concat(configServices.baseURL, "/").concat(apiInfo.url);
+            finalUrl = joinUrl(configServices.baseURL, apiInfo.url);
         }
         return compileUrl(finalUrl, apiInfo.methods, payload !== null && payload !== void 0 ? payload : {}, options);
     }

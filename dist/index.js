@@ -481,7 +481,7 @@ var Driver = /** @class */ (function () {
                     }
                     else {
                         // Use simple baseURL + endpoint concatenation (ignore any service versions)
-                        fullUrl = "".concat(_this.config.baseURL, "/").concat(apiInfo.url);
+                        fullUrl = (0, index_1.joinUrl)(_this.config.baseURL, apiInfo.url);
                     }
                     if (payload && Object.keys(payload).length > 0 && apiInfo.methods === driver_1.MethodAPI.get) {
                         var queryString = qs.stringify(payload);
