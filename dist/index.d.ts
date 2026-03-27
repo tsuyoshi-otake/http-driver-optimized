@@ -1,15 +1,6 @@
 import { AxiosInstance, AxiosRequestConfig } from "axios";
-import type { ApiResponseLike, AsyncRequestTransform, AsyncResponseTransform, HttpDriverInstance, ResponseFormat, ServiceApi, VersionConfig } from "./types/driver";
-export interface DriverResponse {
-    ok: boolean;
-    problem: string;
-    originalError: Error | null;
-    data: any | null;
-    status: number;
-    headers: any | null;
-    duration: number;
-}
-export type { DriverConfig, HttpDriverInstance, ResponseFormat, ServiceApi, ServiceUrlCompile, VersionConfig } from "./types/driver";
+import type { ApiResponseLike, AsyncRequestTransform, AsyncResponseTransform, CacheConfig, HttpDriverInstance, MiddlewareFn, OnRequestHook, OnResponseHook, ResponseFormat, RetryConfig, ServiceApi, VersionConfig } from "./types/driver";
+export type { CacheConfig, DriverConfig, HttpDriverInstance, MiddlewareContext, MiddlewareFn, OnRequestHook, OnResponseHook, ResponseFormat, RetryConfig, ServiceApi, ServiceUrlCompile, VersionConfig } from "./types/driver";
 export { MethodAPI } from "./types/driver";
 export declare class DriverBuilder {
     private config;
@@ -19,19 +10,23 @@ export declare class DriverBuilder {
     withGlobalVersion(version: string | number): this;
     withVersionTemplate(template: string): this;
     enableVersioning(enabled?: boolean): this;
+    withRetry(config: RetryConfig): this;
+    withCache(config: CacheConfig): this;
+    withTimeout(ms: number): this;
+    use(middleware: MiddlewareFn): this;
+    onRequest(hook: OnRequestHook): this;
+    onResponse(hook: OnResponseHook): this;
     withAddAsyncRequestTransformAxios(callback: AsyncRequestTransform): this;
     withAddAsyncResponseTransformAxios(callback: AsyncResponseTransform): this;
     withAddRequestTransformAxios(callback: (request: AxiosRequestConfig) => void): this;
-    withAddResponseTransformAxios(callback: (response: ApiResponseLike<any>) => void): this;
-    withHandleInterceptorErrorAxios(callback: (axiosInstance: any, processQueue: (error: any, token: string | null) => void, isRefreshing: boolean) => (error: any) => Promise<any>): this;
+    withAddResponseTransformAxios(callback: (response: ApiResponseLike) => void): this;
+    withHandleInterceptorErrorAxios(callback: (axiosInstance: unknown, processQueue: (error: unknown, token: string | null) => void, isRefreshing: {
+        value: boolean;
+    }, addToQueue: (resolve: (value: unknown) => void, reject: (reason: unknown) => void) => void) => (error: unknown) => Promise<unknown>): this;
     withAddTransformResponseFetch(callback: (response: ResponseFormat) => ResponseFormat): this;
-    withAddRequestTransformFetch(callback: (url: string, requestOptions: {
-        [key: string]: any;
-    }) => {
+    withAddRequestTransformFetch(callback: (url: string, requestOptions: Record<string, unknown>) => {
         url: string;
-        requestOptions: {
-            [key: string]: any;
-        };
+        requestOptions: Record<string, unknown>;
     }): this;
     build(): HttpDriverInstance & AxiosInstance;
 }

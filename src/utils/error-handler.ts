@@ -1,7 +1,6 @@
 import type { ResponseFormat } from "../types/driver";
-import { AuthenticationError, HTTPError, MalformedResponseError, NetworkError, RedirectError, TimeoutError, TLSError } from "../types/errors";
+import { HTTPError } from "../types/errors";
 
-// ErrorResponse must match ResponseFormat structure
 export function normalizeError(error: unknown): ResponseFormat {
   const baseError = {
     ok: false as const,
@@ -29,7 +28,6 @@ export function normalizeError(error: unknown): ResponseFormat {
     };
   }
 
-  // Handle unexpected error types
   return {
     ...baseError,
     status: 500,
@@ -39,45 +37,15 @@ export function normalizeError(error: unknown): ResponseFormat {
 }
 
 export function handleErrorResponse(error: unknown): ResponseFormat {
-  if (error instanceof AuthenticationError) {
-    return normalizeError(error);
-  }
-
-  if (error instanceof TimeoutError) {
-    return normalizeError(error);
-  }
-
-  if (error instanceof NetworkError) {
-    return normalizeError(error);
-  }
-
-  if (error instanceof RedirectError) {
-    return normalizeError(error);
-  }
-
-  if (error instanceof TLSError) {
-    return normalizeError(error);
-  }
-
-  if (error instanceof MalformedResponseError) {
-    return normalizeError(error);
-  }
-
   return normalizeError(error);
 }
 
 export function isMalformedResponse(response: unknown): boolean {
   if (!response) return true;
-  
   if (typeof response === 'string') {
-    try {
-      JSON.parse(response);
-      return false;
-    } catch {
-      return true;
-    }
+    try { JSON.parse(response); return false; }
+    catch { return true; }
   }
-
   return false;
 }
 

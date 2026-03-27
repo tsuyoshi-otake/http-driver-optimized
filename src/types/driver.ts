@@ -1,4 +1,4 @@
-import { AxiosError, AxiosRequestConfig, AxiosResponse } from "axios";
+import { AxiosRequestConfig, AxiosResponse } from "axios";
 
 export enum MethodAPI {
   get = "get",
@@ -11,30 +11,64 @@ export enum MethodAPI {
   unlink = "unlink",
 }
 
+// --- Retry Config ---
+export interface RetryConfig {
+  /** Max number of retry attempts (default: 0 = no retry) */
+  maxAttempts?: number;
+  /** Delay in ms between retries (default: 1000) */
+  delay?: number;
+  /** Backoff strategy (default: "fixed") */
+  backoff?: "fixed" | "exponential";
+  /** HTTP status codes that trigger retry (default: [408, 429, 500, 502, 503, 504]) */
+  retryOn?: number[];
+}
+
+// --- Cache Config ---
+export interface CacheConfig {
+  /** Enable caching (default: false) */
+  enabled?: boolean;
+  /** TTL in ms (default: 30000) */
+  ttl?: number;
+  /** Only cache GET requests (default: true) */
+  getOnly?: boolean;
+}
+
+// --- Middleware ---
+export type MiddlewareContext = {
+  url: string;
+  method: string;
+  serviceId: string;
+  payload?: Record<string, unknown>;
+  options?: Record<string, unknown>;
+  response?: ResponseFormat;
+};
+
+export type MiddlewareFn = (
+  ctx: MiddlewareContext,
+  next: () => Promise<void>
+) => Promise<void>;
+
+// --- Observability ---
+export type OnRequestHook = (info: { url: string; method: string; serviceId: string; timestamp: number }) => void;
+export type OnResponseHook = (info: { url: string; method: string; serviceId: string; status: number; duration: number; ok: boolean }) => void;
+
 export interface ServiceApi {
   id: string;
   url: string;
   method: MethodAPI;
   version?: number | string;
-  options?: { [key: string]: any };
-  showSuccess?: boolean;
+  options?: Record<string, unknown>;
+  /** Per-service timeout in ms */
+  timeout?: number;
+  /** Per-service retry config */
+  retry?: RetryConfig;
 }
 
 export interface ServiceUrlCompile<T = string> {
   id: T | string;
-  params?: { [key: string]: any };
+  params?: Record<string, string | number>;
 }
 
-export interface DriverInformation {
-  baseURL: string;
-  services: any;
-  [key: string]: any;
-}
-
-/**
- * Problem code set used for normalized error mapping.
- * This replaces apisauce's PROBLEM_CODE.
- */
 export type PROBLEM_CODE =
   | "CLIENT_ERROR"
   | "SERVER_ERROR"
@@ -42,29 +76,19 @@ export type PROBLEM_CODE =
   | "NETWORK_ERROR"
   | "UNKNOWN_ERROR";
 
-/**
- * Headers record type replacement for apisauce HEADERS in HttpDriverResponse.
- */
 export type HEADERS = Record<string, string>;
 
-/**
- * ApiResponse-like shape exposed to Axios response transforms, replacing apisauce ApiResponse.
- */
-export interface ApiResponseLike<T = any> {
+export interface ApiResponseLike<T = unknown> {
   ok: boolean;
   status: number;
   data: T | null;
   headers?: Record<string, string> | Headers | null;
   config?: AxiosRequestConfig;
   problem?: string | null;
-  originalError?: any;
+  originalError?: unknown;
   duration?: number;
 }
 
-/**
- * Registrar types for async transforms (replaces apisauce Async*Transform types).
- * Consumers call the provided registrar with their transform function.
- */
 export type AsyncRequestTransform = (
   transform: (request: AxiosRequestConfig) => void | Promise<void>
 ) => void;
@@ -74,38 +98,10 @@ export type AsyncResponseTransform = (
 ) => void;
 
 export interface VersionConfig {
-  /**
-   * Position where version should be injected in the URL
-   * - 'after-base': baseURL/v1/endpoint (default)
-   * - 'before-endpoint': baseURL/endpoint/v1
-   * - 'prefix': v1.baseURL/endpoint
-   * - 'custom': use custom template
-   */
   position?: 'after-base' | 'before-endpoint' | 'prefix' | 'custom';
-  
-  /**
-   * Custom template for version placement
-   * Use {baseURL}, {version}, {endpoint} as placeholders
-   * Example: "{baseURL}/api/{version}/{endpoint}"
-   * REQUIRED when using version functionality
-   */
   template?: string;
-  
-  /**
-   * Version prefix (default: 'v')
-   * Set to empty string to use version without prefix
-   */
   prefix?: string;
-  
-  /**
-   * Global version to apply to all services without explicit version
-   */
   defaultVersion?: string | number;
-  
-  /**
-   * Enable version building functionality
-   * When false or undefined, version building is disabled
-   */
   enabled?: boolean;
 }
 
@@ -113,114 +109,95 @@ export interface DriverConfig {
   baseURL: string;
   services: ServiceApi[];
   withCredentials?: boolean;
-  
-  // Version configuration
   versionConfig?: VersionConfig;
 
-  // Axios transforms (sync)
-  addRequestTransformAxios?: (request: AxiosRequestConfig) => void;
-  addTransformResponseAxios?: (response: ApiResponseLike<any>) => void;
+  /** Global retry config (can be overridden per-service) */
+  retry?: RetryConfig;
+  /** Response cache config */
+  cache?: CacheConfig;
+  /** Global timeout in ms */
+  timeout?: number;
 
-  // Axios transforms (async) — registrar pattern
+  /** Middleware pipeline */
+  middleware?: MiddlewareFn[];
+
+  /** Observability hooks */
+  onRequest?: OnRequestHook;
+  onResponse?: OnResponseHook;
+
+  addRequestTransformAxios?: (request: AxiosRequestConfig) => void;
+  addTransformResponseAxios?: (response: ApiResponseLike) => void;
   addAsyncRequestTransform?: AsyncRequestTransform;
   addAsyncResponseTransform?: AsyncResponseTransform;
 
-  // Axios error interceptor (token refresh patterns)
   handleInterceptorErrorAxios?: (
-    axiosInstance: any,
-    processQueue: (error: any, token: string | null) => void,
-    isRefreshing: boolean
-  ) => (error: any) => Promise<any>;
+    axiosInstance: unknown,
+    processQueue: (error: unknown, token: string | null) => void,
+    isRefreshing: { value: boolean },
+    addToQueue: (resolve: (value: unknown) => void, reject: (reason: unknown) => void) => void
+  ) => (error: unknown) => Promise<unknown>;
 
-  // Fetch transforms
   addTransformResponseFetch?: (response: ResponseFormat) => ResponseFormat;
   addRequestTransformFetch?: (
     url: string,
-    requestOptions: { [key: string]: any }
-  ) => { url: string; requestOptions: { [key: string]: any } };
-
-  [key: string]: any;
-}
-
-export interface HttpDriverResponse<T> {
-  duration: number;
-  problem: null;
-  originalError: null;
-  ok: boolean;
-  status: number;
-  messageFieldValidate: DataObject;
-  data?: T;
-  headers?: HEADERS;
-  config?: AxiosRequestConfig;
-}
-
-interface DataObject {
-  [key: string]: any;
-}
-
-export interface BaseApiResponse {
-  ok: boolean;
-  problem: string | null;
-  originalError: string | null;
-  data: any | null;
-  status: number;
-  headers: Headers | null;
-  duration: number;
+    requestOptions: Record<string, unknown>
+  ) => { url: string; requestOptions: Record<string, unknown> };
 }
 
 export interface UrlBuilder {
   url: string;
   method: MethodAPI;
-  param?: { [key: string]: any };
+  param?: Record<string, string>;
 }
 
 export interface CompileUrlResult {
   url: string;
-  payload: { [key: string]: any };
+  payload: Record<string, unknown>;
   method: MethodAPI;
   pathname: string;
-  options: { [key: string]: object | string };
+  options: Record<string, unknown>;
 }
 
-export interface ResponseFormat<T = any> {
+export interface ResponseFormat<T = unknown> {
   ok: boolean;
-  problem: string | null | PROBLEM_CODE;
-  originalError: string | null | AxiosError;
+  problem: string | null;
+  originalError: string | null;
   data: T;
   status: number;
   config?: AxiosRequestConfig;
-  headers?: Headers | null;
+  headers?: Headers | Record<string, string> | null;
   duration: number;
 }
 
 export interface CompiledServiceInfo {
   url: string;
-  methods: MethodAPI;
+  method: MethodAPI;
   version: number | string | undefined;
-  options: Record<string, any>;
+  options: Record<string, unknown>;
+  timeout?: number;
+  retry?: RetryConfig;
 }
 
 export interface HttpDriverInstance {
-  execService: <T = any>(
+  execService: <T = unknown>(
     idService: ServiceUrlCompile,
-    payload?: any,
-    options?: { [key: string]: any }
+    payload?: Record<string, unknown>,
+    options?: Record<string, unknown>
   ) => Promise<ResponseFormat<T>>;
 
-  execServiceByFetch: <T = any>(
+  execServiceByFetch: <T = unknown>(
     idService: ServiceUrlCompile,
-    payload?: any,
-    options?: { [key: string]: any }
+    payload?: Record<string, unknown> | null,
+    options?: Record<string, unknown>
   ) => Promise<ResponseFormat<T>>;
 
   getInfoURL: (
     idService: ServiceUrlCompile,
-    payload?: any
+    payload?: Record<string, unknown>
   ) => {
     fullUrl: string | null;
     pathname: string | null;
     method: MethodAPI | null;
-    payload: any;
-    url?: string | null;
+    payload: Record<string, unknown> | null;
   };
 }

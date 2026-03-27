@@ -4,559 +4,448 @@ import type {
   ApiResponseLike,
   AsyncRequestTransform,
   AsyncResponseTransform,
+  CacheConfig,
   DriverConfig,
   HttpDriverInstance,
+  MiddlewareContext,
+  MiddlewareFn,
+  OnRequestHook,
+  OnResponseHook,
   ResponseFormat,
+  RetryConfig,
   ServiceApi,
   ServiceUrlCompile,
   VersionConfig,
 } from "./types/driver";
 import { MethodAPI } from "./types/driver";
 import { MalformedResponseError, NetworkError, TimeoutError } from "./types/errors";
+import { ResponseCache } from "./utils/cache";
+import { RequestDedup } from "./utils/dedup";
 import { handleErrorResponse } from "./utils/error-handler";
+import { executeMiddleware } from "./utils/middleware";
+import { parseFetchResponse } from "./utils/response-parser";
+import { resolveRetryConfig, withRetry } from "./utils/retry";
 import {
   buildUrlWithVersion,
-  compileBodyFetchWithContextType,
+  compileBodyFetchWithContentType,
   compileService,
   compileUrlByService,
   joinUrl,
   responseFormat,
 } from "./utils/index";
 
-export interface DriverResponse {
-  ok: boolean;
-  problem: string;
-  originalError: Error | null;
-  data: any | null;
-  status: number;
-  headers: any | null;
-  duration: number;
-}
-
-// Export types for client usage
 export type {
-  DriverConfig, HttpDriverInstance,
-  ResponseFormat,
-  ServiceApi,
-  ServiceUrlCompile, VersionConfig
+  CacheConfig, DriverConfig, HttpDriverInstance, MiddlewareContext, MiddlewareFn,
+  OnRequestHook, OnResponseHook, ResponseFormat, RetryConfig,
+  ServiceApi, ServiceUrlCompile, VersionConfig
 } from "./types/driver";
 
-// Export enum as value
 export { MethodAPI } from "./types/driver";
+
+const BODYLESS_METHODS = new Set(["get", "delete", "head"]);
 
 class Driver {
   private config: DriverConfig;
   private axiosInstance: AxiosInstance;
+  private cache: ResponseCache;
+  private dedup: RequestDedup;
 
   constructor(config: DriverConfig) {
     this.config = config;
+    this.cache = new ResponseCache(config.cache);
+    this.dedup = new RequestDedup();
 
     this.axiosInstance = axios.create({
       withCredentials: config.withCredentials ?? true,
       baseURL: config.baseURL,
     });
 
-    let isRefreshing = false;
-    let failedQueue: {
-      resolve: (value?: any) => void;
-      reject: (reason?: any) => void;
-    }[] = [];
-
-    const processQueue = (error: any, token: string | null = null) => {
-      failedQueue.forEach((prom) => {
-        /* istanbul ignore next */
+    const isRefreshing = { value: false };
+    const failedQueue: Array<{ resolve: (value: unknown) => void; reject: (reason: unknown) => void }> = [];
+    const processQueue = (error: unknown, token: string | null = null) => {
+      const queue = failedQueue.splice(0);
+      for (const prom of queue) {
         if (error) prom.reject(error);
-        /* istanbul ignore next */
         else prom.resolve(token);
-      });
-      failedQueue = [];
+      }
     };
-
-    const defaultInterceptorError = (_axiosInstance: any) => async (error: any) => {
-      return Promise.reject(error);
+    const addToQueue = (resolve: (value: unknown) => void, reject: (reason: unknown) => void) => {
+      failedQueue.push({ resolve, reject });
     };
+    const defaultInterceptorError = () => async (error: unknown) => Promise.reject(error);
 
-    // Response error interceptor (token refresh pattern compatibility)
     this.axiosInstance.interceptors.response.use(
       (response) => response,
       this.config.handleInterceptorErrorAxios
-        ? this.config.handleInterceptorErrorAxios(
-            this.axiosInstance,
-            processQueue,
-            isRefreshing
-          )
-        : defaultInterceptorError(this.axiosInstance)
+        ? this.config.handleInterceptorErrorAxios(this.axiosInstance, processQueue, isRefreshing, addToQueue)
+        : defaultInterceptorError()
     );
 
-    // Request interceptor - sync + async transforms compatibility
     this.axiosInstance.interceptors.request.use(
       async (request) => {
-        // Sync request transform (apisauce-style)
         if (this.config.addRequestTransformAxios) {
-          try {
-            this.config.addRequestTransformAxios(request as AxiosRequestConfig);
-          } catch (e) {
-            // if transform throws, keep consistent behavior: propagate error
-            throw e;
-          }
+          try { this.config.addRequestTransformAxios(request as AxiosRequestConfig); }
+          catch (e) { throw e; }
         }
-
-        // Async request transforms (align to contract names)
         if (this.config.addAsyncRequestTransform) {
-          // The contract expects a function receiving a transform registrar.
-          // We emulate apisauce by letting consumer provide a transform that mutates request.
           const transforms: Array<(req: AxiosRequestConfig) => Promise<void> | void> = [];
-          const registrar = (transform: (req: AxiosRequestConfig) => Promise<void> | void) => {
-            transforms.push(transform);
-          };
+          const registrar = (transform: (req: AxiosRequestConfig) => Promise<void> | void) => { transforms.push(transform); };
           try {
-            // Invoke consumer to register transforms
             this.config.addAsyncRequestTransform(registrar as any);
-            // Apply them sequentially
-            for (const t of transforms) {
-              await t(request as AxiosRequestConfig);
-            }
-          } catch (e) {
-            throw e;
-          }
+            for (const t of transforms) { await t(request as AxiosRequestConfig); }
+          } catch (e) { throw e; }
         }
-
         return request;
       },
       /* istanbul ignore next */
-      (error) => Promise.reject(error)
+      (error: unknown) => Promise.reject(error)
     );
 
-    // Response interceptor - sync + async transforms compatibility
     this.axiosInstance.interceptors.response.use(
       async (response) => {
-        // Sync response transform (apisauce-style): consumer expects ApiResponse-like
         if (this.config.addTransformResponseAxios) {
           const apiResponseLike = Driver.mapAxiosToApiResponseLike(response);
-          try {
-            this.config.addTransformResponseAxios(apiResponseLike as any);
-          } catch (e) {
-            // swallow to not block pipeline; apisauce executes transforms but shouldn't break successful response
-          }
+          try { this.config.addTransformResponseAxios(apiResponseLike); }
+          catch { /* swallow */ }
         }
-
-        // Async response transforms (contract names)
         if (this.config.addAsyncResponseTransform) {
           const transforms: Array<(res: AxiosResponse) => Promise<void> | void> = [];
-          const registrar = (transform: (res: AxiosResponse) => Promise<void> | void) => {
-            transforms.push(transform);
-          };
+          const registrar = (transform: (res: AxiosResponse) => Promise<void> | void) => { transforms.push(transform); };
           try {
             this.config.addAsyncResponseTransform(registrar as any);
-            for (const t of transforms) {
-              await t(response);
-            }
-          } catch {
-            // ignore to keep success flow
-          }
+            for (const t of transforms) { await t(response); }
+          } catch { /* ignore */ }
         }
-
         return response;
       },
       /* istanbul ignore next */
-      (error) => Promise.reject(error)
+      (error: unknown) => Promise.reject(error)
     );
-
     return this;
+  }
+
+  private emitRequest(serviceId: string, url: string, method: string) {
+    this.config.onRequest?.({ url, method, serviceId, timestamp: Date.now() });
+  }
+
+  private emitResponse(serviceId: string, url: string, method: string, status: number, duration: number, ok: boolean) {
+    this.config.onResponse?.({ url, method, serviceId, status, duration, ok });
+  }
+
+  private applyTimeout(options: Record<string, any>, serviceTimeout?: number): Record<string, any> {
+    const timeout = serviceTimeout ?? this.config.timeout;
+    if (timeout && !options.signal) {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), timeout);
+      return { ...options, signal: controller.signal };
+    }
+    return options;
   }
 
   appendExecService(): HttpDriverInstance & AxiosInstance {
     const httpDriver = Object.assign(this.axiosInstance, {
-      execService: async <T = any>(
+      execService: async <T = unknown>(
         idService: ServiceUrlCompile,
-        payload?: any,
-        options?: { [key: string]: any }
+        payload?: Record<string, unknown>,
+        options?: Record<string, unknown>
       ): Promise<ResponseFormat<T>> => {
-        try {
-          const apiInfo = compileUrlByService(
-            this.config,
-            idService,
-            payload,
-            options
-          );
-
-          if (apiInfo == null) {
-            throw new Error(`Service ${idService.id} in driver not found`);
-          }
-
-          let payloadConvert: any = apiInfo.payload;
-
-          // multipart hint compatibility (keep headers removal behavior for fetch only)
-          if (
-            apiInfo.options.headers &&
-            typeof apiInfo.options.headers === "object" &&
-            (apiInfo.options.headers as any)?.hasOwnProperty("Content-Type")
-          ) {
-            const contentType = (apiInfo.options.headers as any)["Content-Type"];
-            if (typeof contentType === "string" && contentType.toLowerCase() === "multipart/form-data") {
-              // axios handles multipart boundaries automatically with FormData
-              // ensure body is FormData if consumer passed plain object
-              // no header deletion here (axios expects headers)
-            }
-          }
-
-          // Support AbortController passed via either `signal` or `abortController.signal` on axios config
-          if (!(apiInfo.options as any)?.signal && (apiInfo.options as any)?.abortController?.signal) {
-            (apiInfo.options as any).signal = (apiInfo.options as any).abortController.signal;
-          }
-
-          const start = performance.now();
-          // Use method-call style to maintain backward-compatibility with tests that mock driver.get/post/etc.
-          // Properly forward config (including AbortController signal) for GET/DELETE/HEAD.
-          const axiosCall = (this.axiosInstance as any)[apiInfo.method]?.bind(this.axiosInstance);
-          let rawResult: any;
-          if (axiosCall) {
-            const methodLower = String(apiInfo.method).toLowerCase();
-            if (methodLower === "get" || methodLower === "delete" || methodLower === "head") {
-              // For GET-like methods, the 2nd param is the config object.
-              rawResult = await axiosCall(apiInfo.pathname, apiInfo.options);
-            } else {
-              // For methods with body, pass data as 2nd param and config (includes signal) as 3rd.
-              rawResult = await axiosCall(apiInfo.pathname, payloadConvert, apiInfo.options);
-            }
-          } else {
-            rawResult = await this.axiosInstance.request({
-              method: apiInfo.method,
-              url: apiInfo.pathname,
-              data: payloadConvert,
-              ...apiInfo.options,
-            });
-          }
-          const duration = parseFloat((performance.now() - start).toFixed(2));
-
-          if (!rawResult) {
-            return responseFormat({
-              ok: false,
-              status: 500,
-              headers: null,
-              duration,
-              data: null,
-              problem: "No response from service call",
-              originalError: "No response from service call",
-            } as any);
-          }
-
-          // If consumer mocked method to return already-normalized object, pass-through
-          if (typeof (rawResult as any).ok === "boolean" && typeof (rawResult as any).status === "number") {
-            return rawResult as ResponseFormat;
-          }
-
-          const normalized = Driver.axiosResponseToResponseFormat(rawResult as AxiosResponse, duration);
-          return normalized;
-        } catch (error: any) {
-          // AxiosError normalization
-          if ((error as AxiosError).isAxiosError) {
-            const axErr = error as AxiosError;
-
-            // Treat request cancellation via AbortController as timeout-equivalent
-            if ((axErr as any)?.code === "ERR_CANCELED" || (axErr as any)?.name === "CanceledError") {
-              return responseFormat(handleErrorResponse(new TimeoutError()));
-            }
-
-            const status = axErr.response?.status ?? 0;
-            const headers = axErr.response?.headers ?? null;
-            const problem = Driver.mapAxiosErrorToProblem(axErr);
-            return responseFormat({
-              ok: false,
-              status,
-              headers: Driver.normalizeAxiosHeaders(headers),
-              duration: 0,
-              data: axErr.response?.data ?? null,
-              problem,
-              originalError: axErr as any,
-            } as any);
-          }
-
-          if (error instanceof Error) {
-            if (error.message.toLowerCase().includes("timeout")) {
-              return responseFormat(handleErrorResponse(new TimeoutError()));
-            }
-            if (error.message.toLowerCase().includes("network")) {
-              return responseFormat(handleErrorResponse(new NetworkError()));
-            }
-          }
-          return responseFormat(handleErrorResponse(error));
+        const apiInfo = compileUrlByService(this.config, idService, payload, options);
+        if (apiInfo == null) {
+          return responseFormat(handleErrorResponse(new Error(`Service ${idService.id} in driver not found`))) as ResponseFormat<T>;
         }
-      },
 
-      execServiceByFetch: async <T = any>(
-        idService: ServiceUrlCompile,
-        payload?: any,
-        options?: { [key: string]: any }
-      ): Promise<ResponseFormat<T>> => {
-        try {
-          const apiInfo = compileUrlByService(
-            this.config,
-            idService,
-            payload,
-            options
-          );
+        const serviceInfo = compileService(idService, this.config.services);
+        const retryConfig = resolveRetryConfig(this.config.retry, serviceInfo!.retry);
 
-          if (apiInfo == null) {
-            throw new Error(`Service ${idService.id} in driver not found`);
-          }
+        // Middleware context
+        const ctx: MiddlewareContext = {
+          url: apiInfo.url, method: apiInfo.method, serviceId: String(idService.id),
+          payload, options,
+        };
 
-          // apiInfo.url is already absolute (compileUrlByService prepends baseURL)
-          let url: string = apiInfo.url;
-          let requestOptions = {
-            ...apiInfo.options,
-          } as {
-            [key: string]: any;
-          };
+        // Cache check
+        const cacheKey = this.cache.buildKey(apiInfo.method, apiInfo.url, payload);
+        if (this.cache.shouldCache(apiInfo.method)) {
+          const cached = this.cache.get<T>(cacheKey);
+          if (cached) return cached;
+        }
 
-          // Support AbortController passed as either `signal` or `abortController.signal`
-          if (!requestOptions.signal && requestOptions.abortController?.signal) {
-            requestOptions.signal = requestOptions.abortController.signal;
-          }
+        // Dedup for GET requests
+        const isGet = BODYLESS_METHODS.has(apiInfo.method);
+        const dedupKey = isGet ? this.dedup.buildKey(apiInfo.method, apiInfo.url, payload) : "";
 
-          if (!requestOptions.headers?.hasOwnProperty("Content-Type")) {
-            requestOptions.headers = {
-              ...requestOptions.headers,
-              "Content-Type": "application/json",
-            };
-          }
+        const execute = async (): Promise<ResponseFormat<T>> => {
+          return withRetry(retryConfig, async () => {
+            let result: ResponseFormat<T> | undefined;
 
-          if (apiInfo.method.toUpperCase() != "GET") {
-            requestOptions = {
-              ...requestOptions,
-              method: apiInfo.method.toUpperCase(),
-              body: compileBodyFetchWithContextType(
-                (requestOptions.headers?.["Content-Type"] as string)?.toLowerCase?.(),
-                apiInfo.payload
-              ),
+            const core = async () => {
+              result = await this.executeAxiosCall<T>(apiInfo, idService);
             };
 
-            if (requestOptions.headers?.hasOwnProperty("Content-Type")) {
-              if (
-                (requestOptions.headers["Content-Type"] as string).toLowerCase() ==
-                "multipart/form-data"
-              )
-                delete requestOptions["headers"];
-            }
-          }
-
-          if (this.config.addRequestTransformFetch) {
-            ({ url, requestOptions } = this.config.addRequestTransformFetch(
-              url,
-              requestOptions
-            ));
-          }
-
-          const startFetchTime = performance.now();
-          const res = await fetch(url, requestOptions);
-          const endFetchTime = performance.now();
-          const duration = parseFloat(
-            (endFetchTime - startFetchTime).toFixed(2)
-          );
-          
-          let data: any = null;
-          
-          // Determine response type from options or content-type header
-          const responseType = (options as any)?.responseType;
-          const contentType = res.headers.get('content-type')?.toLowerCase() || '';
-          
-          try {
-            if (responseType === 'blob') {
-              data = await res.blob();
-            } else if (responseType === 'arraybuffer') {
-              data = await res.arrayBuffer();
-            } else if (responseType === 'text') {
-              data = await res.text();
-            } else if (contentType.startsWith('image/') || 
-                       contentType.startsWith('application/pdf')) {
-              // Auto-detect blob types based on content-type when no explicit responseType
-              data = await res.blob();
-            } else if (contentType.startsWith('application/octet-stream') && !responseType) {
-              // Only default to blob for octet-stream if no explicit responseType
-              data = await res.blob();
-            } else if (contentType.startsWith('text/') && !contentType.includes('application/json')) {
-              // Auto-detect text types when no explicit responseType
-              data = await res.text();
+            if (this.config.middleware?.length) {
+              await executeMiddleware(this.config.middleware, ctx, core);
+              if (result) ctx.response = result;
             } else {
-              // Default behavior: try JSON, fallback to text
-              const resText = await res.text();
-              if (!resText) {
-                throw new MalformedResponseError("Malformed response");
-              }
-              
-              // If content-type suggests JSON or no specific type, try to parse as JSON
-              if (contentType.includes('application/json') || !contentType) {
-                try {
-                  data = JSON.parse(resText);
-                } catch (err) {
-                  throw new MalformedResponseError("Malformed response");
-                }
-              } else {
-                // Non-JSON content type, return as text
-                data = resText;
-              }
+              await core();
             }
-          } catch (err) {
-            if (err instanceof MalformedResponseError) {
-              throw err;
-            }
-            throw new MalformedResponseError("Failed to parse response");
-          }
 
-          const response = responseFormat({
-            ok: res.ok,
-            duration: duration,
-            status: res.status,
-            headers: res.headers,
-            data: data,
-            problem: !res.ok ? res.statusText : null,
-            originalError: !res.ok ? res.statusText : null,
+            return result!;
           });
+        };
 
-          return this.config.addTransformResponseFetch
-            ? this.config.addTransformResponseFetch(response)
-            : response;
+        try {
+          this.emitRequest(String(idService.id), apiInfo.url, apiInfo.method);
+          const result = isGet && dedupKey
+            ? await this.dedup.execute<T>(dedupKey, execute)
+            : await execute();
+
+          this.emitResponse(String(idService.id), apiInfo.url, apiInfo.method, result.status, result.duration, result.ok);
+
+          if (result.ok && this.cache.shouldCache(apiInfo.method)) {
+            this.cache.set(cacheKey, result as ResponseFormat);
+          }
+          return result;
         } catch (error) {
-          if (error instanceof MalformedResponseError) {
-            return responseFormat(handleErrorResponse(error));
-          }
-
-          // Fetch aborts surface as DOMException with name "AbortError"
-          if ((error as any)?.name === "AbortError") {
-            return responseFormat(handleErrorResponse(new TimeoutError()));
-          }
-
-          if (error instanceof Error) {
-            const lower = error.message.toLowerCase();
-            if (error.name === "AbortError" || lower.includes("aborted") || lower.includes("canceled")) {
-              return responseFormat(handleErrorResponse(new TimeoutError()));
-            }
-            if (lower.includes('timeout')) {
-              return responseFormat(handleErrorResponse(new TimeoutError()));
-            }
-            
-            if (lower.includes('network')) {
-              return responseFormat(handleErrorResponse(new NetworkError()));
-            }
-          }
-
-          return responseFormat(handleErrorResponse(error));
+          return responseFormat(handleErrorResponse(error)) as ResponseFormat<T>;
         }
       },
 
-      getInfoURL: (idService: ServiceUrlCompile, payload: any = {}) => {
-        const apiInfo = compileService(idService, this.config.services);
+      execServiceByFetch: async <T = unknown>(
+        idService: ServiceUrlCompile,
+        payload?: Record<string, unknown> | null,
+        options?: Record<string, unknown>
+      ): Promise<ResponseFormat<T>> => {
+        const apiInfo = compileUrlByService(this.config, idService, payload ?? undefined, options);
+        if (apiInfo == null) {
+          return responseFormat(handleErrorResponse(new Error(`Service ${idService.id} in driver not found`))) as ResponseFormat<T>;
+        }
 
+        const serviceInfo = compileService(idService, this.config.services);
+        const retryConfig = resolveRetryConfig(this.config.retry, serviceInfo!.retry);
+
+        const ctx: MiddlewareContext = {
+          url: apiInfo.url, method: apiInfo.method, serviceId: String(idService.id),
+          payload: payload ?? undefined, options,
+        };
+
+        const cacheKey = this.cache.buildKey(apiInfo.method, apiInfo.url, payload ?? undefined);
+        if (this.cache.shouldCache(apiInfo.method)) {
+          const cached = this.cache.get<T>(cacheKey);
+          if (cached) return cached;
+        }
+
+        const isGet = apiInfo.method === "get";
+        const dedupKey = isGet ? this.dedup.buildKey(apiInfo.method, apiInfo.url, payload ?? undefined) : "";
+
+        const execute = async (): Promise<ResponseFormat<T>> => {
+          return withRetry(retryConfig, async () => {
+            let result: ResponseFormat<T> | undefined;
+            const core = async () => {
+              result = await this.executeFetchCall<T>(apiInfo, idService, options);
+            };
+            if (this.config.middleware?.length) {
+              await executeMiddleware(this.config.middleware, ctx, core);
+              if (result) ctx.response = result;
+            } else {
+              await core();
+            }
+            return result!;
+          });
+        };
+
+        try {
+          this.emitRequest(String(idService.id), apiInfo.url, apiInfo.method);
+          const result = isGet && dedupKey
+            ? await this.dedup.execute<T>(dedupKey, execute)
+            : await execute();
+
+          this.emitResponse(String(idService.id), apiInfo.url, apiInfo.method, result.status, result.duration, result.ok);
+
+          if (result.ok && this.cache.shouldCache(apiInfo.method)) {
+            this.cache.set(cacheKey, result as ResponseFormat);
+          }
+          return result;
+        } catch (error) {
+          return responseFormat(handleErrorResponse(error)) as ResponseFormat<T>;
+        }
+      },
+
+      getInfoURL: (idService: ServiceUrlCompile, payload: Record<string, unknown> = {}) => {
+        const apiInfo = compileService(idService, this.config.services);
         if (apiInfo != null) {
           let fullUrl: string;
-          
-          // Only use version building if explicitly enabled
           if (this.config.versionConfig?.enabled) {
-            // Determine version to use: service version > global default version
-            const version = apiInfo.version || this.config.versionConfig?.defaultVersion;
-            
-            // Build URL with version injection
-            fullUrl = buildUrlWithVersion(
-              this.config.baseURL,
-              apiInfo.url,
-              version,
-              this.config.versionConfig
-            );
+            const vCfg = this.config.versionConfig;
+            const version = apiInfo.version || vCfg.defaultVersion;
+            fullUrl = buildUrlWithVersion(this.config.baseURL, apiInfo.url, version, vCfg);
           } else {
-            // Use simple baseURL + endpoint concatenation (ignore any service versions)
             fullUrl = joinUrl(this.config.baseURL, apiInfo.url);
           }
-
-          if (payload && Object.keys(payload).length > 0 && apiInfo.methods === MethodAPI.get) {
+          if (payload && Object.keys(payload).length > 0 && apiInfo.method === MethodAPI.get) {
             const queryString = qs.stringify(payload);
             const separator = fullUrl.includes('?') ? '&' : '?';
-            return {
-              fullUrl: fullUrl + separator + queryString,
-              pathname: apiInfo.url + "?" + queryString,
-              method: apiInfo.methods,
-              payload: null,
-            };
+            return { fullUrl: fullUrl + separator + queryString, pathname: apiInfo.url + "?" + queryString, method: apiInfo.method, payload: null };
           }
-
-          return {
-            fullUrl: fullUrl,
-            pathname: apiInfo.url,
-            method: apiInfo.methods,
-            payload: payload,
-          };
+          return { fullUrl, pathname: apiInfo.url, method: apiInfo.method, payload };
         }
-
-        return {
-          fullUrl: null,
-          pathname: null,
-          method: null,
-          payload: null,
-        };
+        return { fullUrl: null, pathname: null, method: null, payload: null };
       },
     });
-
     return httpDriver;
   }
 
-  // Utilities for normalization and compatibility
-  private static axiosResponseToResponseFormat<T = any>(
-    res: AxiosResponse<T>,
-    duration: number
-  ): ResponseFormat<T> {
-    return responseFormat({
-      ok: res.status >= 200 && res.status <= 299,
-      status: res.status,
-      data: res.data,
-      headers: Driver.normalizeAxiosHeaders(res.headers),
-      duration,
-      problem: res.status >= 400 ? res.statusText : null,
-      originalError: null as any,
-    } as any);
-  }
-
-  private static normalizeAxiosHeaders(headers: any): any | null {
-    if (!headers) return null;
-
-    const lowerize = (obj: any) => {
-      const norm: Record<string, string> = {};
-      Object.entries(obj || {}).forEach(([k, v]) => {
-        if (typeof v === "string") {
-          norm[k.toLowerCase()] = v;
-        } else if (Array.isArray(v)) {
-          norm[k.toLowerCase()] = v.join(", ");
+  private async executeAxiosCall<T>(apiInfo: any, idService: ServiceUrlCompile): Promise<ResponseFormat<T>> {
+    try {
+      const payloadConvert = apiInfo.payload;
+      const optHeaders = apiInfo.options.headers as Record<string, unknown> | undefined;
+      if (optHeaders && typeof optHeaders === "object" && optHeaders.hasOwnProperty("Content-Type")) {
+        const contentType = optHeaders["Content-Type"];
+        if (typeof contentType === "string" && contentType.toLowerCase() === "multipart/form-data") {
+          // axios handles multipart boundaries automatically
         }
-      });
-      return norm;
-    };
+      }
 
-    // Handle AxiosHeaders via toJSON, then normalize keys and array values
-    if (typeof (headers as any)?.toJSON === "function") {
-      return lowerize((headers as any).toJSON());
+      let opts = this.applyTimeout(apiInfo.options as Record<string, any>, compileService(idService, this.config.services)!.timeout);
+      if (!opts.signal && opts.abortController?.signal) {
+        opts.signal = opts.abortController.signal;
+      }
+
+      const start = performance.now();
+      const axiosCall = (this.axiosInstance as any)[apiInfo.method]?.bind(this.axiosInstance);
+      let rawResult: any;
+      if (axiosCall) {
+        if (BODYLESS_METHODS.has(apiInfo.method)) {
+          rawResult = await axiosCall(apiInfo.pathname, opts);
+        } else {
+          rawResult = await axiosCall(apiInfo.pathname, payloadConvert, opts);
+        }
+      } else {
+        rawResult = await this.axiosInstance.request({
+          method: apiInfo.method, url: apiInfo.pathname, data: payloadConvert, ...opts,
+        });
+      }
+      const duration = Math.round((performance.now() - start) * 100) / 100;
+
+      if (!rawResult) {
+        return responseFormat({ ok: false, status: 500, headers: null, duration, data: null,
+          problem: "No response from service call", originalError: "No response from service call" } as ResponseFormat<T>);
+      }
+      if (typeof rawResult.ok === "boolean" && typeof rawResult.status === "number") {
+        return rawResult as ResponseFormat<T>;
+      }
+      return Driver.axiosResponseToResponseFormat<T>(rawResult as AxiosResponse, duration);
+    } catch (error: unknown) {
+      if ((error as AxiosError).isAxiosError) {
+        const axErr = error as AxiosError;
+        const axCode = String((axErr as any).code || "");
+        const axName = String((axErr as any).name || "");
+        if (axCode === "ERR_CANCELED" || axName === "CanceledError") {
+          return responseFormat(handleErrorResponse(new TimeoutError())) as ResponseFormat<T>;
+        }
+        const axResponse = axErr.response;
+        return responseFormat({ ok: false, status: axResponse?.status ?? 0,
+          headers: Driver.normalizeAxiosHeaders(axResponse?.headers ?? null),
+          duration: 0, data: (axResponse?.data ?? null) as T,
+          problem: Driver.mapAxiosErrorToProblem(axErr), originalError: axErr.message,
+        } as ResponseFormat<T>);
+      }
+      if (error instanceof Error) {
+        const lower = error.message.toLowerCase();
+        if (lower.includes("timeout")) return responseFormat(handleErrorResponse(new TimeoutError())) as ResponseFormat<T>;
+        if (lower.includes("network")) return responseFormat(handleErrorResponse(new NetworkError())) as ResponseFormat<T>;
+      }
+      return responseFormat(handleErrorResponse(error)) as ResponseFormat<T>;
     }
-
-    // Handle plain objects
-    if (typeof headers === "object") {
-      return lowerize(headers);
-    }
-
-    return null;
   }
 
-  private static mapAxiosToApiResponseLike(res: AxiosResponse) {
-    return {
-      ok: res.status >= 200 && res.status <= 299,
-      problem: res.status >= 400 ? res.statusText : null,
-      originalError: null,
-      data: res.data,
-      status: res.status,
-      headers: res.headers,
-      config: res.config,
-      duration: 0,
-    };
+  private async executeFetchCall<T>(apiInfo: any, idService: ServiceUrlCompile, options?: Record<string, unknown>): Promise<ResponseFormat<T>> {
+    try {
+      let url: string = apiInfo.url;
+      let requestOptions: Record<string, any> = { ...apiInfo.options };
+
+      requestOptions = this.applyTimeout(requestOptions, compileService(idService, this.config.services)!.timeout);
+      if (!requestOptions.signal && requestOptions.abortController?.signal) {
+        requestOptions.signal = requestOptions.abortController.signal;
+      }
+      if (!requestOptions.headers?.hasOwnProperty("Content-Type")) {
+        requestOptions.headers = { ...requestOptions.headers, "Content-Type": "application/json" };
+      }
+
+      const methodUpper = apiInfo.method.toUpperCase();
+      if (methodUpper !== "GET") {
+        const ct: string = requestOptions.headers["Content-Type"];
+        requestOptions = { ...requestOptions, method: methodUpper,
+          body: compileBodyFetchWithContentType(ct.toLowerCase(), apiInfo.payload) };
+        if (ct.toLowerCase() === "multipart/form-data") delete requestOptions["headers"];
+      }
+
+      if (this.config.addRequestTransformFetch) {
+        ({ url, requestOptions } = this.config.addRequestTransformFetch(url, requestOptions) as any);
+      }
+
+      const startFetchTime = performance.now();
+      const res = await fetch(url, requestOptions);
+      const duration = Math.round((performance.now() - startFetchTime) * 100) / 100;
+
+      let data: unknown;
+      try {
+        data = await parseFetchResponse(res, (options as any)?.responseType);
+      } catch (err) {
+        if (err instanceof MalformedResponseError) throw err;
+        throw new MalformedResponseError("Failed to parse response");
+      }
+
+      const response = responseFormat({
+        ok: res.ok, duration, status: res.status, headers: res.headers, data: data as T,
+        problem: !res.ok ? res.statusText : null, originalError: !res.ok ? res.statusText : null,
+      });
+
+      return this.config.addTransformResponseFetch
+        ? this.config.addTransformResponseFetch(response) as ResponseFormat<T>
+        : response as ResponseFormat<T>;
+    } catch (error) {
+      if (error instanceof MalformedResponseError) {
+        return responseFormat(handleErrorResponse(error)) as ResponseFormat<T>;
+      }
+      if (error instanceof Error) {
+        const lower = error.message.toLowerCase();
+        if (error.name === "AbortError" || lower.includes("aborted") || lower.includes("canceled"))
+          return responseFormat(handleErrorResponse(new TimeoutError())) as ResponseFormat<T>;
+        if (lower.includes('timeout')) return responseFormat(handleErrorResponse(new TimeoutError())) as ResponseFormat<T>;
+        if (lower.includes('network')) return responseFormat(handleErrorResponse(new NetworkError())) as ResponseFormat<T>;
+      }
+      if (typeof error === "object" && error !== null && (error as any).name === "AbortError")
+        return responseFormat(handleErrorResponse(new TimeoutError())) as ResponseFormat<T>;
+      return responseFormat(handleErrorResponse(error)) as ResponseFormat<T>;
+    }
+  }
+
+  private static axiosResponseToResponseFormat<T = unknown>(res: AxiosResponse<T>, duration: number): ResponseFormat<T> {
+    return responseFormat({ ok: res.status >= 200 && res.status <= 299, status: res.status, data: res.data,
+      headers: Driver.normalizeAxiosHeaders(res.headers), duration,
+      problem: res.status >= 400 ? res.statusText : null, originalError: null } as ResponseFormat<T>);
+  }
+
+  private static normalizeAxiosHeaders(headers: unknown): Record<string, string> | null {
+    if (!headers || typeof headers !== "object") return null;
+    const raw: Record<string, unknown> = typeof (headers as any).toJSON === "function"
+      ? (headers as any).toJSON() : headers as Record<string, unknown>;
+    const norm: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v === "string") norm[k.toLowerCase()] = v;
+      else if (Array.isArray(v)) norm[k.toLowerCase()] = v.join(", ");
+    }
+    return norm;
+  }
+
+  private static mapAxiosToApiResponseLike(res: AxiosResponse): ApiResponseLike {
+    const ok = res.status >= 200 && res.status <= 299;
+    return { ok, problem: ok ? null : res.statusText, originalError: null,
+      data: res.data, status: res.status, headers: res.headers as any, config: res.config, duration: 0 };
   }
 
   private static mapAxiosErrorToProblem(error: AxiosError): string {
-    const code = (error.code || "").toUpperCase();
+    const code = (error.code ?? "").toUpperCase();
     if (code.includes("ECONNABORTED") || code.includes("ETIMEDOUT")) return "TIMEOUT_ERROR";
     if (!error.response) return "NETWORK_ERROR";
     const status = error.response.status;
@@ -567,125 +456,64 @@ class Driver {
 }
 
 export class DriverBuilder {
-  private config: DriverConfig = {
-    baseURL: "",
-    services: [],
-  };
+  private config: DriverConfig = { baseURL: "", services: [] };
 
-  withBaseURL(baseURL: string) {
-    this.config.baseURL = baseURL;
-    return this;
-  }
+  withBaseURL(baseURL: string) { this.config.baseURL = baseURL; return this; }
+  withServices(services: ServiceApi[]) { this.config.services = services; return this; }
 
-  withServices(services: ServiceApi[]) {
-    this.config.services = services;
-    return this;
-  }
-
+  // Version
   withVersionConfig(versionConfig: VersionConfig) {
-    this.config.versionConfig = {
-      ...versionConfig,
-      enabled: versionConfig.enabled !== undefined ? versionConfig.enabled : true
-    };
+    this.config.versionConfig = { ...versionConfig, enabled: versionConfig.enabled !== undefined ? versionConfig.enabled : true };
     return this;
   }
-
   withGlobalVersion(version: string | number) {
-    if (!this.config.versionConfig) {
-      this.config.versionConfig = {};
-    }
-    this.config.versionConfig.defaultVersion = version;
-    return this;
+    if (!this.config.versionConfig) this.config.versionConfig = {};
+    this.config.versionConfig.defaultVersion = version; return this;
   }
-
   withVersionTemplate(template: string) {
-    if (!this.config.versionConfig) {
-      this.config.versionConfig = {};
-    }
+    if (!this.config.versionConfig) this.config.versionConfig = {};
     this.config.versionConfig.template = template;
     this.config.versionConfig.position = 'custom';
-    this.config.versionConfig.enabled = true;
-    return this;
+    this.config.versionConfig.enabled = true; return this;
   }
-
   enableVersioning(enabled: boolean = true) {
-    if (!this.config.versionConfig) {
-      this.config.versionConfig = {};
-    }
-    this.config.versionConfig.enabled = enabled;
-    return this;
+    if (!this.config.versionConfig) this.config.versionConfig = {};
+    this.config.versionConfig.enabled = enabled; return this;
   }
 
-  withAddAsyncRequestTransformAxios(
-    callback: AsyncRequestTransform
-  ) {
-    this.config.addAsyncRequestTransform = callback;
+  // Retry, Cache, Timeout
+  withRetry(config: RetryConfig) { this.config.retry = config; return this; }
+  withCache(config: CacheConfig) { this.config.cache = config; return this; }
+  withTimeout(ms: number) { this.config.timeout = ms; return this; }
 
-    return this;
+  // Middleware
+  use(middleware: MiddlewareFn) {
+    if (!this.config.middleware) this.config.middleware = [];
+    this.config.middleware.push(middleware); return this;
   }
 
-  withAddAsyncResponseTransformAxios(
-    callback: AsyncResponseTransform
-  ) {
-    this.config.addAsyncResponseTransform = callback;
+  // Observability
+  onRequest(hook: OnRequestHook) { this.config.onRequest = hook; return this; }
+  onResponse(hook: OnResponseHook) { this.config.onResponse = hook; return this; }
 
-    return this;
-  }
-
-  withAddRequestTransformAxios(
-    callback: (request: AxiosRequestConfig) => void
-  ) {
-    this.config.addRequestTransformAxios = callback;
-
-    return this;
-  }
-
-  withAddResponseTransformAxios(
-    callback: (response: ApiResponseLike<any>) => void
-  ) {
-    this.config.addTransformResponseAxios = callback;
-
-    return this;
-  }
-
+  // Axios transforms
+  withAddAsyncRequestTransformAxios(callback: AsyncRequestTransform) { this.config.addAsyncRequestTransform = callback; return this; }
+  withAddAsyncResponseTransformAxios(callback: AsyncResponseTransform) { this.config.addAsyncResponseTransform = callback; return this; }
+  withAddRequestTransformAxios(callback: (request: AxiosRequestConfig) => void) { this.config.addRequestTransformAxios = callback; return this; }
+  withAddResponseTransformAxios(callback: (response: ApiResponseLike) => void) { this.config.addTransformResponseAxios = callback; return this; }
   withHandleInterceptorErrorAxios(
-    callback: (
-      axiosInstance: any,
-      processQueue: (error: any, token: string | null) => void,
-      isRefreshing: boolean
-    ) => (error: any) => Promise<any>
-  ) {
-    this.config.handleInterceptorErrorAxios = callback;
+    callback: (axiosInstance: unknown, processQueue: (error: unknown, token: string | null) => void, isRefreshing: { value: boolean }, addToQueue: (resolve: (value: unknown) => void, reject: (reason: unknown) => void) => void) => (error: unknown) => Promise<unknown>
+  ) { this.config.handleInterceptorErrorAxios = callback; return this; }
 
-    return this;
-  }
-
-  withAddTransformResponseFetch(
-    callback: (response: ResponseFormat) => ResponseFormat
-  ) {
-    this.config.addTransformResponseFetch = callback;
-
-    return this;
-  }
-
-  withAddRequestTransformFetch(
-    callback: (
-      url: string,
-      requestOptions: { [key: string]: any }
-    ) => { url: string; requestOptions: { [key: string]: any } }
-  ) {
-    this.config.addRequestTransformFetch = callback;
-
-    return this;
+  // Fetch transforms
+  withAddTransformResponseFetch(callback: (response: ResponseFormat) => ResponseFormat) { this.config.addTransformResponseFetch = callback; return this; }
+  withAddRequestTransformFetch(callback: (url: string, requestOptions: Record<string, unknown>) => { url: string; requestOptions: Record<string, unknown> }) {
+    this.config.addRequestTransformFetch = callback; return this;
   }
 
   build(): HttpDriverInstance & AxiosInstance {
-    if (!this.config.baseURL || !this.config.services.length) {
-      throw new Error("Missing required configuration values");
-    }
-
+    if (!this.config.baseURL || !this.config.services.length) throw new Error("Missing required configuration values");
     const driver = new Driver(this.config);
-
     return driver.appendExecService();
   }
 }

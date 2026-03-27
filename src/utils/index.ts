@@ -10,64 +10,34 @@ import type {
   UrlBuilder,
   VersionConfig,
 } from "../types/driver";
+import { parseFetchResponse } from "./response-parser";
 
-/**
- * Replaces placeholders in a URL with corresponding parameter values.
- *
- * @param {string} url - The URL template containing placeholders in the format `{param}`.
- * @param {Record<string, string>} params - An object where keys correspond to parameter names in the URL and values are the replacements.
- * @returns {string} - The URL with all placeholders replaced by their corresponding parameters.
- */
+const TRAILING_SLASHES = /\/+$/;
+const LEADING_SLASHES = /^\/+/;
+const URL_PARAMS_PATTERN = /\{(\w+)\}/g;
+
 export function replaceParamsInUrl(
   url: string,
   params: Record<string, string>
 ): string {
   return url.replace(
-    /\{(\w+)\}/g,
-    (match: string, paramName: string) => params[paramName]
+    URL_PARAMS_PATTERN,
+    (_match: string, paramName: string) => params[paramName]
   );
 }
 
-/**
- * Finds a service by ID within a list of services.
- *
- * @param {ServiceApi[]} services - An array of service API objects.
- * @param {string} idToFind - The ID of the service to find.
- * @returns {ServiceApi | null} - The service object if found, otherwise null.
- */
 export function findServiceApi(
   services: ServiceApi[],
   idToFind: string
 ): ServiceApi | null {
-  const service = services.find((service) => service.id === idToFind);
-  if (service) {
-    return service;
-  } else {
-    return null;
-  }
+  return services.find((service) => service.id === idToFind) ?? null;
 }
 
-/**
- * Compiles service information based on the service ID and an array of services.
- *
- * @param {ServiceUrlCompile} idService - The service identifier with parameters.
- * @param {ServiceApi[]} services - The array of service configurations.
- * @returns {CompiledServiceInfo | null} - An object containing the compiled service URL, method, version, and options, or null if the service is not found.
- */
-/**
- * Joins URL parts ensuring single slash between them.
- * Preserves protocol:// if present in the first part.
- *
- * @param {...(string | undefined | null)[]} parts - URL parts to join
- * @returns {string} - Joined URL
- */
 export function joinUrl(...parts: (string | undefined | null)[]): string {
   const validParts = parts.filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
   if (validParts.length === 0) return '';
-  
   return validParts.reduce((acc, curr) => {
-    // Ensure strictly one slash between acc and curr
-    return acc.replace(/\/+$/, '') + '/' + curr.replace(/^\/+/, '');
+    return acc.replace(TRAILING_SLASHES, '') + '/' + curr.replace(LEADING_SLASHES, '');
   }) as string;
 }
 
@@ -76,211 +46,109 @@ export function compileService(
   services: ServiceApi[]
 ): CompiledServiceInfo | null {
   const serviceExec = findServiceApi(services, idService.id);
-
   if (serviceExec) {
     return {
-      url: replaceParamsInUrl(serviceExec.url, idService.params ?? {}),
-      methods: serviceExec.method,
+      url: replaceParamsInUrl(serviceExec.url, (idService.params ?? {}) as Record<string, string>),
+      method: serviceExec.method,
       version: serviceExec.version,
       options: serviceExec.options ?? {},
+      timeout: serviceExec.timeout,
+      retry: serviceExec.retry,
     };
   }
-
   return null;
 }
 
-/**
- * Builds URL with version injection based on configuration
- * Returns simple URL concatenation if version building is disabled or not configured
- *
- * @param {string} baseURL - The base URL 
- * @param {string} endpoint - The endpoint path
- * @param {string | number | undefined} version - Version to inject
- * @param {VersionConfig} versionConfig - Version configuration
- * @returns {string} - Complete URL with version injected (or simple concatenation if disabled)
- */
 export function buildUrlWithVersion(
   baseURL: string,
   endpoint: string,
   version: string | number | undefined,
   versionConfig?: VersionConfig
 ): string {
-  // If version building is not enabled, return simple concatenation
-  if (!versionConfig?.enabled) {
-    return joinUrl(baseURL, endpoint);
-  }
+  if (!versionConfig?.enabled) return joinUrl(baseURL, endpoint);
+  if (!version) return joinUrl(baseURL, endpoint);
 
-  // If no version provided and version building is enabled, return simple concatenation
-  if (!version) {
-    return joinUrl(baseURL, endpoint);
-  }
-
-  const config = versionConfig;
-  const position = config.position || 'after-base';
-  const prefix = config.prefix !== undefined ? config.prefix : 'v';
+  const position = versionConfig.position || 'after-base';
+  const prefix = versionConfig.prefix !== undefined ? versionConfig.prefix : 'v';
   const versionString = `${prefix}${version}`;
 
   switch (position) {
-    case 'prefix':
-      // v1.example.com/endpoint
+    case 'prefix': {
       const urlParts = baseURL.split('://');
       if (urlParts.length === 2) {
         return joinUrl(`${urlParts[0]}://${versionString}.${urlParts[1]}`, endpoint);
       }
       return joinUrl(`${versionString}.${baseURL}`, endpoint);
-
+    }
     case 'before-endpoint':
-      // baseURL/endpoint/v1
       return joinUrl(baseURL, endpoint, versionString);
-
     case 'custom':
-      if (config.template) {
-        return config.template
+      if (versionConfig.template) {
+        return versionConfig.template
           .replace('{baseURL}', baseURL)
           .replace('{version}', versionString)
           .replace('{endpoint}', endpoint);
       }
-      // If no template provided but custom position selected, throw error
       throw new Error('Custom version position requires a template. Please provide a template in versionConfig.');
-
     case 'after-base':
     default:
-      // baseURL/v1/endpoint (most common pattern)
       return joinUrl(baseURL, versionString, endpoint);
   }
 }
 
-/**
- * Compiles the full URL and request details for a given service.
- *
- * @param {DriverConfig} configServices - Configuration object containing baseURL and services.
- * @param {ServiceUrlCompile} idService - The service identifier with parameters.
- * @param {any} [payload] - Optional request payload.
- * @param {object} [options] - Additional request options such as headers.
- * @returns {CompileUrlResult | null} - The compiled URL information or null if the service is not found.
- */
 export function compileUrlByService(
   configServices: DriverConfig,
   idService: ServiceUrlCompile,
-  payload?: any,
-  options?: { [key: string]: any }
+  payload?: Record<string, unknown>,
+  options?: Record<string, unknown>
 ): CompileUrlResult | null {
   const apiInfo = compileService(idService, configServices.services);
-
   if (apiInfo != null) {
     let finalUrl: string;
-    
-    // Only use version building if explicitly enabled
     if (configServices.versionConfig?.enabled) {
-      // Determine version to use: service version > global default version
-      const version = apiInfo.version || configServices.versionConfig?.defaultVersion;
-      
-      // Build URL with version injection
-      finalUrl = buildUrlWithVersion(
-        configServices.baseURL,
-        apiInfo.url,
-        version,
-        configServices.versionConfig
-      );
+      const vCfg = configServices.versionConfig;
+      const version = apiInfo.version || vCfg.defaultVersion;
+      finalUrl = buildUrlWithVersion(configServices.baseURL, apiInfo.url, version, vCfg);
     } else {
-      // Use simple baseURL + endpoint concatenation (ignore any service versions)
       finalUrl = joinUrl(configServices.baseURL, apiInfo.url);
     }
-    
-    return compileUrl(
-      finalUrl,
-      apiInfo.methods,
-      payload ?? {},
-      options
-    );
+    return compileUrl(finalUrl, apiInfo.method, payload ?? {}, options);
   }
-
-  console.error(`Service ${idService.id} in driver not found`);
-
   return null;
 }
 
-/**
- * Formats and standardizes a response object.
- *
- * @param {ResponseFormat<T>} response - An object containing response details such as status, data, headers, etc.
- * @returns {ResponseFormat<T>} - A formatted response object.
- */
-export function responseFormat<T = any>({
-  status,
-  data,
-  headers,
-  originalError,
-  duration,
-  problem,
+export function responseFormat<T = unknown>({
+  status, data, headers, originalError, duration, problem,
 }: ResponseFormat<T>): ResponseFormat<T> {
-  let ok: boolean = false;
-
-  if (status >= 200 && status <= 299) {
-    ok = true;
-  }
-
   return {
-    ok: ok,
-    problem: problem,
-    originalError: originalError,
-    data: data,
-    status: status,
-    headers: headers,
-    duration: duration,
+    ok: status >= 200 && status <= 299,
+    problem, originalError, data, status, headers, duration,
   } as ResponseFormat<T>;
 }
 
-/**
- * Compiles a URL using a payload as query parameters if the method is GET.
- *
- * @param {string} url - The base URL.
- * @param {MethodAPI} method - The HTTP method (e.g., GET, POST).
- * @param {object} [payload] - Request payload to be sent.
- * @param {object} [options] - Additional request options.
- * @returns {CompileUrlResult} - An object containing the compiled URL, method, payload, options, and pathname.
- */
 export function compileUrl(
   url: string,
   method: MethodAPI,
-  payload?: { [key: string]: object | string },
-  options?: { [key: string]: object | string }
+  payload?: Record<string, unknown>,
+  options?: Record<string, unknown>
 ): CompileUrlResult {
-  let optionRequest = options ?? {};
-
+  const optionRequest = options ?? {};
   if (Object.keys(payload ?? {}).length > 0 && method === "get") {
-    // compile query string
     const queryString = qs.stringify(payload);
-    // clear payload
     payload = {};
-    // generate url
     url = url + "?" + queryString;
   }
-
-  return {
-    url: url,
-    payload: payload ?? {},
-    method: method,
-    pathname: url,
-    options: optionRequest,
-  };
+  return { url, payload: payload ?? {}, method, pathname: url, options: optionRequest };
 }
 
 /**
  * Formats the payload based on the specified content type.
- *
- * Depending on the content type, the function converts the payload into a suitable
- * format for HTTP transmission, such as a JSON string or FormData.
- *
- * @param {string} contextType - The content type of the request (e.g., "application/json", "multipart/form-data").
- * @param {object} payload - The payload object to be formatted.
- * @returns {string | FormData} - The formatted payload as a string for JSON, or as FormData for multipart data.
  */
-export function compileBodyFetchWithContextType(
-  contextType: string,
-  payload: { [key: string]: any }
+export function compileBodyFetchWithContentType(
+  contentType: string,
+  payload: Record<string, unknown>
 ): string | FormData {
-  switch (contextType) {
+  switch (contentType) {
     case "multipart/form-data":
       return objectToFormData(payload);
     case "application/json":
@@ -290,177 +158,115 @@ export function compileBodyFetchWithContextType(
   }
 }
 
-/**
- * Performs an HTTP fetch request using the given URL builder, payload, and options.
- *
- * @param {UrlBuilder} urlBuilder - An object defining URL and request method.
- * @param {object} [payload] - The request payload.
- * @param {object} [options] - Additional fetch options like headers.
- * @returns {Promise<ResponseFormat<T>>} - A promise resolving to the standardized response format.
- */
-export async function httpClientFetch<T = any>(
-  urlBuilder: UrlBuilder,
-  payload?: {
-    [key: string]: string | object;
-  },
-  options?: {
-    [key: string]: any;
-  }
-): Promise<ResponseFormat<T>> {
-  const finalUrl = replaceParamsInUrl(urlBuilder.url, urlBuilder.param ?? {});
-  const request = compileUrl(finalUrl, urlBuilder.method, payload, options);
-  let requestOptions = { ...options };
+/** @deprecated Use compileBodyFetchWithContentType instead */
+export const compileBodyFetchWithContextType = compileBodyFetchWithContentType;
 
-  if (!requestOptions.headers?.hasOwnProperty("Content-Type")) {
-    requestOptions.headers = {
-      ...requestOptions.headers,
-      "Content-Type": "application/json",
-    };
+export async function httpClientFetch<T = unknown>(
+  urlBuilder: UrlBuilder,
+  payload?: Record<string, unknown>,
+  options?: Record<string, unknown>
+): Promise<ResponseFormat<T>> {
+  const finalUrl = replaceParamsInUrl(urlBuilder.url, (urlBuilder.param ?? {}) as Record<string, string>);
+  const request = compileUrl(finalUrl, urlBuilder.method, payload, options);
+  let requestOptions: Record<string, any> = { ...options };
+
+  if (!requestOptions.headers || !Object.prototype.hasOwnProperty.call(requestOptions.headers, "Content-Type")) {
+    requestOptions.headers = { ...(requestOptions.headers || {}), "Content-Type": "application/json" };
   }
 
   try {
     if (request.method.toUpperCase() != "GET") {
+      const contentType: string = requestOptions.headers["Content-Type"];
       requestOptions = {
         ...requestOptions,
         method: request.method.toUpperCase(),
-        body: compileBodyFetchWithContextType(
-          requestOptions.headers?.["Content-Type"].toLowerCase(),
-          request.payload
-        ),
+        body: compileBodyFetchWithContentType(contentType.toLowerCase(), request.payload),
       };
-
-      if (requestOptions.headers?.hasOwnProperty("Content-Type")) {
-        if (
-          requestOptions.headers["Content-Type"].toLowerCase() ==
-          "multipart/form-data"
-        )
-          delete requestOptions["headers"];
+      if (contentType.toLowerCase() === "multipart/form-data") {
+        delete requestOptions["headers"];
       }
     }
 
     const startFetchTime = performance.now();
     const res = await fetch(request.url, requestOptions);
-    const endFetchTime = performance.now();
-    const duration = parseFloat((endFetchTime - startFetchTime).toFixed(2));
-    let resText: string | null = null;
-    let data: string | null = null;
+    const duration = Math.round((performance.now() - startFetchTime) * 100) / 100;
 
+    let data: unknown;
     try {
-      resText = await res.text();
-      data =
-        JSON.parse(resText) == undefined ? resText : JSON.parse(resText);
-    } catch (error) {
-      data = resText;
+      data = await parseFetchResponse(res, (options as any)?.responseType);
+    } catch {
+      // Fallback: try text
+      try { data = await res.text(); } catch { data = null; }
     }
 
     if (!res.ok) {
       return responseFormat<T>({
-        ok: res.ok,
-        duration: duration,
-        status: res.status,
-        headers: res.headers,
-        data: data as T,
-        problem: res.statusText,
-        originalError: res.statusText,
+        ok: res.ok, duration, status: res.status, headers: res.headers,
+        data: data as T, problem: res.statusText, originalError: res.statusText,
       });
     }
-
     return responseFormat<T>({
-      ok: res.ok,
-      duration: duration,
-      status: res.status,
-      headers: res.headers,
-      data: data as T,
-      problem: null,
-      originalError: null,
+      ok: res.ok, duration, status: res.status, headers: res.headers,
+      data: data as T, problem: null, originalError: null,
     });
   } catch (error) {
     return responseFormat<T>({
-      ok: false,
-      duration: 0,
-      originalError: `${error}`,
-      problem: `Error fetching data ${error}`,
-      data: null as T,
-      status: 500,
+      ok: false, duration: 0, originalError: `${error}`,
+      problem: `Error fetching data ${error}`, data: null as T, status: 500,
     });
   }
 }
 
-/**
- * Removes null and undefined values from an object, recursively processing nested objects.
- *
- * @param {T} obj - The object to clean.
- * @returns {T} - The cleaned object without null or undefined values.
- */
 export function removeNullValues<T extends Record<string, any>>(obj: T): T {
   const result: Record<string, any> = {};
-
   for (const key in obj) {
     const value = obj[key];
-
     if (value !== null && value !== undefined) {
       if (typeof value === "object" && !Array.isArray(value)) {
-        // Recursively remove null values for nested objects
-        result[key] = removeNullValues(value as Record<string, any>);
+        if (isFileOrBlob(value)) {
+          result[key] = value;
+        } else {
+          result[key] = removeNullValues(value as Record<string, any>);
+        }
       } else {
         result[key] = value;
       }
     }
   }
-
   return result as T;
 }
 
 /**
- * Checks if a value is File-like or Blob-like object (compatible with both browser and Node.js polyfills)
- * @param value - The value to check
- * @returns true if the value has File-like or Blob-like properties
+ * Duck-type check for File/Blob-like objects.
+ * Uses property checks only - no hardcoded constructor names.
  */
-function isFileOrBlobObject(value: any): boolean {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
+function isFileOrBlob(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
 
-  // Check for File-like object (has name and lastModified)
-  const hasFileProps = typeof value.name === 'string' && 
-                      typeof value.lastModified === 'number';
-  
-  // Check for Blob-like object (has size, type, and stream/text methods)
-  const hasBlobProps = typeof value.size === 'number' &&
-                      typeof value.type === 'string' &&
-                      (typeof value.stream === 'function' || typeof value.text === 'function');
+  // File-like: has name (string) + lastModified (number)
+  const hasFileProps = typeof v.name === 'string' && typeof v.lastModified === 'number';
+  // Blob-like: has size (number) + type (string) + stream/text function
+  const hasBlobProps = typeof v.size === 'number' && typeof v.type === 'string'
+    && (typeof v.stream === 'function' || typeof v.text === 'function');
 
-  // Check constructor names or toString representations
-  const constructorName = value.constructor?.name;
-  const objectString = value.toString?.();
-  
-  const isFileType = constructorName === 'File' || 
-                    objectString === '[object File]' ||
-                    constructorName === 'MockFile';
-                    
-  const isBlobType = constructorName === 'Blob' || 
-                    objectString === '[object Blob]' ||
-                    constructorName === 'MockBlob';
+  if (hasFileProps || hasBlobProps) return true;
 
-  // Return true if any condition matches
-  return hasFileProps || hasBlobProps || isFileType || isBlobType;
+  // Fallback: check constructor name and toString representation
+  const ctorName = (v as any).constructor?.name ?? '';
+  const str = typeof (v as any).toString === 'function' ? (v as any).toString() : '';
+  return ctorName === 'File' || ctorName === 'Blob'
+    || str === '[object File]' || str === '[object Blob]';
 }
 
-/**
- * Converts an object payload to FormData, handling nested objects and arrays.
- *
- * @param {any} payload - The payload to convert to FormData.
- * @param {FormData} [formData] - The FormData object to append to (default is a new FormData instance).
- * @param {string | null} [parentKey] - The key of the parent object in a nested structure.
- * @returns {FormData} - FormData populated with the payload data.
- */
 function objectToFormData(
-  payload: any,
+  payload: Record<string, unknown>,
   formData: FormData = new FormData(),
   parentKey: string | null = null
 ): FormData {
-  // remove property has null value
-  payload = removeNullValues(payload);
+  if (parentKey === null) {
+    payload = removeNullValues(payload);
+  }
 
   for (const key in payload) {
     if (payload.hasOwnProperty(key)) {
@@ -468,19 +274,19 @@ function objectToFormData(
       const formKey = parentKey ? `${parentKey}.${key}` : key;
 
       if (Array.isArray(value)) {
-        value.forEach((subValue: any, index: number) => {
-          if (isFileOrBlobObject(subValue)) {
-            formData.append(`${formKey}[${index}]`, subValue);
+        value.forEach((subValue: unknown, index: number) => {
+          if (isFileOrBlob(subValue)) {
+            formData.append(`${formKey}[${index}]`, subValue as any);
           } else if (typeof subValue === "object" && subValue !== null) {
-            objectToFormData(subValue, formData, `${formKey}[${index}]`);
+            objectToFormData(subValue as Record<string, unknown>, formData, `${formKey}[${index}]`);
           } else {
             formData.append(`${formKey}[${index}]`, String(subValue));
           }
         });
-      } else if (isFileOrBlobObject(value)) {
-        formData.append(formKey, value);
+      } else if (isFileOrBlob(value)) {
+        formData.append(formKey, value as any);
       } else if (typeof value === "object" && value !== null) {
-        objectToFormData(value, formData, formKey);
+        objectToFormData(value as Record<string, unknown>, formData, formKey);
       } else {
         formData.append(formKey, String(value));
       }
@@ -488,4 +294,3 @@ function objectToFormData(
   }
   return formData;
 }
-
