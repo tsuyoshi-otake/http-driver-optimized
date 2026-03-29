@@ -1,10 +1,10 @@
 import { parseFetchResponse } from "../../src/utils/response-parser";
 import { MalformedResponseError } from "../../src/types/errors";
 
-function mockResponse(opts: { contentType?: string; body?: string; blob?: Blob; arrayBuffer?: ArrayBuffer; ok?: boolean }): Response {
+function mockResponse(opts: { contentType?: string; body?: string; blob?: Blob; arrayBuffer?: ArrayBuffer; ok?: boolean; status?: number }): Response {
   return {
     ok: opts.ok ?? true,
-    status: 200,
+    status: opts.status ?? 200,
     headers: new Headers(opts.contentType ? { "Content-Type": opts.contentType } : {}),
     text: async () => opts.body ?? "",
     blob: async () => opts.blob ?? new Blob(),
@@ -66,6 +66,16 @@ describe("parseFetchResponse", () => {
   test("throws MalformedResponseError for empty body", async () => {
     await expect(parseFetchResponse(mockResponse({ contentType: "application/json", body: "" })))
       .rejects.toThrow(MalformedResponseError);
+  });
+
+  test("returns null for 204 No Content with empty body", async () => {
+    const data = await parseFetchResponse(mockResponse({ contentType: "application/json", body: "", status: 204 }));
+    expect(data).toBeNull();
+  });
+
+  test("returns null for 304 Not Modified with empty body", async () => {
+    const data = await parseFetchResponse(mockResponse({ contentType: "application/json", body: "", status: 304 }));
+    expect(data).toBeNull();
   });
 
   test("throws MalformedResponseError for invalid JSON", async () => {

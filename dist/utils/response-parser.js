@@ -28,8 +28,12 @@ async function parseFetchResponse(res, responseType) {
     }
     // Default: try JSON, fallback to text
     const resText = await res.text();
-    if (!resText)
+    // Empty body is valid for 204 No Content and 304 Not Modified
+    if (!resText) {
+        if (res.status === 204 || res.status === 304)
+            return null;
         throw new errors_1.MalformedResponseError("Malformed response");
+    }
     if (contentType.includes('application/json') || !contentType) {
         try {
             return JSON.parse(resText);

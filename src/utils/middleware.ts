@@ -10,12 +10,14 @@ export async function executeMiddleware(
   core: () => Promise<void>
 ): Promise<void> {
   let index = 0;
+  let coreExecuted = false;
 
   const next = async (): Promise<void> => {
     if (index < middlewares.length) {
       const mw = middlewares[index++];
       await mw(ctx, next);
-    } else {
+    } else if (!coreExecuted) {
+      coreExecuted = true;
       await core();
     }
   };

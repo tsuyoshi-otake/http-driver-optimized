@@ -29,7 +29,12 @@ export async function parseFetchResponse(
 
   // Default: try JSON, fallback to text
   const resText = await res.text();
-  if (!resText) throw new MalformedResponseError("Malformed response");
+
+  // Empty body is valid for 204 No Content and 304 Not Modified
+  if (!resText) {
+    if (res.status === 204 || res.status === 304) return null;
+    throw new MalformedResponseError("Malformed response");
+  }
 
   if (contentType.includes('application/json') || !contentType) {
     try {

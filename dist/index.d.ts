@@ -1,7 +1,14 @@
 import { AxiosInstance, AxiosRequestConfig } from "axios";
 import type { ApiResponseLike, AsyncRequestTransform, AsyncResponseTransform, CacheConfig, HttpDriverInstance, MiddlewareFn, OnRequestHook, OnResponseHook, ResponseFormat, RetryConfig, ServiceApi, VersionConfig } from "./types/driver";
-export type { CacheConfig, DriverConfig, HttpDriverInstance, MiddlewareContext, MiddlewareFn, OnRequestHook, OnResponseHook, ResponseFormat, RetryConfig, ServiceApi, ServiceUrlCompile, VersionConfig } from "./types/driver";
+export type { CacheConfig, DriverConfig, HttpDriverInstance, MiddlewareContext, MiddlewareFn, NDJSONStreamResponseFormat, OnRequestHook, OnResponseHook, ResponseFormat, RetryConfig, ServiceApi, ServiceUrlCompile, SSEEvent, StreamResponseFormat, VersionConfig } from "./types/driver";
 export { MethodAPI } from "./types/driver";
+export { createGraphQLClient } from "./utils/graphql";
+export type { GraphQLRequest, GraphQLResponse } from "./utils/graphql";
+export { parseNDJSONStream } from "./utils/ndjson-parser";
+export { fetchWithDownloadProgress, createUploadProgressBody } from "./utils/progress";
+export type { ProgressInfo, ProgressCallback } from "./utils/progress";
+export { createWebSocketClient } from "./utils/websocket";
+export type { WebSocketConfig, WebSocketClient, WebSocketMessage, Unsubscribe as WebSocketUnsubscribe } from "./utils/websocket";
 export declare class DriverBuilder {
     private config;
     withBaseURL(baseURL: string): this;

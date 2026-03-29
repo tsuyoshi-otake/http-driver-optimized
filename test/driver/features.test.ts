@@ -380,6 +380,46 @@ describe("applyTimeout function", () => {
     await driver.execService({ id: "svc.get", params: { id: "1" } }, {}, { signal: controller.signal });
     expect(capturedConfig.signal).toBe(controller.signal);
   });
+
+  test("uses AbortController fallback when AbortSignal.timeout is unavailable", async () => {
+    const origTimeout = AbortSignal.timeout;
+    // @ts-ignore
+    delete AbortSignal.timeout;
+    try {
+      const driver = buildDriver([svcGet], { timeout: 5000 });
+      let capturedConfig: any;
+      (driver as any).defaults.adapter = async (config: any) => {
+        capturedConfig = config;
+        return { data: { ok: true }, status: 200, statusText: "OK", headers: {}, config };
+      };
+      await driver.execService({ id: "svc.get", params: { id: "1" } });
+      expect(capturedConfig.signal).toBeDefined();
+      expect(capturedConfig.signal).toBeInstanceOf(AbortSignal);
+    } finally {
+      AbortSignal.timeout = origTimeout;
+    }
+  });
+
+  test("AbortController fallback setTimeout fires and aborts signal", async () => {
+    const origTimeout = AbortSignal.timeout;
+    // @ts-ignore
+    delete AbortSignal.timeout;
+    try {
+      const driver = buildDriver([svcGet], { timeout: 10 });
+      let capturedSignal: AbortSignal | undefined;
+      (driver as any).defaults.adapter = async (config: any) => {
+        capturedSignal = config.signal;
+        // Delay longer than timeout to let setTimeout fire
+        await new Promise((r) => setTimeout(r, 30));
+        return { data: { ok: true }, status: 200, statusText: "OK", headers: {}, config };
+      };
+      await driver.execService({ id: "svc.get", params: { id: "1" } });
+      expect(capturedSignal).toBeDefined();
+      expect(capturedSignal!.aborted).toBe(true);
+    } finally {
+      AbortSignal.timeout = origTimeout;
+    }
+  });
 });
 
 describe("Outer catch coverage", () => {

@@ -22,7 +22,10 @@ export function replaceParamsInUrl(
 ): string {
   return url.replace(
     URL_PARAMS_PATTERN,
-    (_match: string, paramName: string) => params[paramName]
+    (_match: string, paramName: string) => {
+      const value = params[paramName];
+      return value !== undefined ? encodeURIComponent(value) : _match;
+    }
   );
 }
 
@@ -81,7 +84,7 @@ export function buildUrlWithVersion(
       return joinUrl(`${versionString}.${baseURL}`, endpoint);
     }
     case 'before-endpoint':
-      return joinUrl(baseURL, endpoint, versionString);
+      return joinUrl(baseURL, versionString, endpoint);
     case 'custom':
       if (versionConfig.template) {
         return versionConfig.template
@@ -271,7 +274,7 @@ function objectToFormData(
   for (const key in payload) {
     if (payload.hasOwnProperty(key)) {
       const value = payload[key];
-      const formKey = parentKey ? `${parentKey}.${key}` : key;
+      const formKey = parentKey ? `${parentKey}[${key}]` : key;
 
       if (Array.isArray(value)) {
         value.forEach((subValue: unknown, index: number) => {

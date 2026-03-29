@@ -32,11 +32,24 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __await = (this && this.__await) || function (v) { return this instanceof __await ? (this.v = v, this) : new __await(v); }
+var __asyncGenerator = (this && this.__asyncGenerator) || function (thisArg, _arguments, generator) {
+    if (!Symbol.asyncIterator) throw new TypeError("Symbol.asyncIterator is not defined.");
+    var g = generator.apply(thisArg, _arguments || []), i, q = [];
+    return i = Object.create((typeof AsyncIterator === "function" ? AsyncIterator : Object).prototype), verb("next"), verb("throw"), verb("return", awaitReturn), i[Symbol.asyncIterator] = function () { return this; }, i;
+    function awaitReturn(f) { return function (v) { return Promise.resolve(v).then(f, reject); }; }
+    function verb(n, f) { if (g[n]) { i[n] = function (v) { return new Promise(function (a, b) { q.push([n, v, a, b]) > 1 || resume(n, v); }); }; if (f) i[n] = f(i[n]); } }
+    function resume(n, v) { try { step(g[n](v)); } catch (e) { settle(q[0][3], e); } }
+    function step(r) { r.value instanceof __await ? Promise.resolve(r.value.v).then(fulfill, reject) : settle(q[0][2], r); }
+    function fulfill(value) { resume("next", value); }
+    function reject(value) { resume("throw", value); }
+    function settle(f, v) { if (f(v), q.shift(), q.length) resume(q[0][0], q[0][1]); }
+};
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DriverBuilder = exports.MethodAPI = void 0;
+exports.DriverBuilder = exports.createWebSocketClient = exports.createUploadProgressBody = exports.fetchWithDownloadProgress = exports.parseNDJSONStream = exports.createGraphQLClient = exports.MethodAPI = void 0;
 const axios_1 = __importDefault(require("axios"));
 const qs = __importStar(require("qs"));
 const driver_1 = require("./types/driver");
@@ -46,11 +59,29 @@ const dedup_1 = require("./utils/dedup");
 const error_handler_1 = require("./utils/error-handler");
 const middleware_1 = require("./utils/middleware");
 const response_parser_1 = require("./utils/response-parser");
+const sse_parser_1 = require("./utils/sse-parser");
+const ndjson_parser_1 = require("./utils/ndjson-parser");
 const retry_1 = require("./utils/retry");
 const index_1 = require("./utils/index");
 var driver_2 = require("./types/driver");
 Object.defineProperty(exports, "MethodAPI", { enumerable: true, get: function () { return driver_2.MethodAPI; } });
+// Re-export utilities for standalone usage
+var graphql_1 = require("./utils/graphql");
+Object.defineProperty(exports, "createGraphQLClient", { enumerable: true, get: function () { return graphql_1.createGraphQLClient; } });
+var ndjson_parser_2 = require("./utils/ndjson-parser");
+Object.defineProperty(exports, "parseNDJSONStream", { enumerable: true, get: function () { return ndjson_parser_2.parseNDJSONStream; } });
+var progress_1 = require("./utils/progress");
+Object.defineProperty(exports, "fetchWithDownloadProgress", { enumerable: true, get: function () { return progress_1.fetchWithDownloadProgress; } });
+Object.defineProperty(exports, "createUploadProgressBody", { enumerable: true, get: function () { return progress_1.createUploadProgressBody; } });
+var websocket_1 = require("./utils/websocket");
+Object.defineProperty(exports, "createWebSocketClient", { enumerable: true, get: function () { return websocket_1.createWebSocketClient; } });
 const BODYLESS_METHODS = new Set(["get", "delete", "head"]);
+/* istanbul ignore next -- defensive: only used when abortController is in options */
+function applyAbortControllerSignal(opts) {
+    if (!opts.signal && opts.abortController) {
+        opts.signal = opts.abortController.signal;
+    }
+}
 class Driver {
     constructor(config) {
         var _a;
@@ -141,8 +172,18 @@ class Driver {
     applyTimeout(options, serviceTimeout) {
         const timeout = serviceTimeout !== null && serviceTimeout !== void 0 ? serviceTimeout : this.config.timeout;
         if (timeout && !options.signal) {
+            // Use AbortSignal.timeout when available (Node 17.3+, modern browsers)
+            // It automatically cleans up the internal timer when the signal is GC'd
+            if (typeof AbortSignal.timeout === 'function') {
+                return Object.assign(Object.assign({}, options), { signal: AbortSignal.timeout(timeout) });
+            }
+            // Fallback: manual AbortController + setTimeout
             const controller = new AbortController();
-            setTimeout(() => controller.abort(), timeout);
+            const timer = setTimeout(() => controller.abort(), timeout);
+            // Prevent timer from keeping Node.js process alive
+            if (timer && typeof timer === 'object' && 'unref' in timer) {
+                timer.unref();
+            }
             return Object.assign(Object.assign({}, options), { signal: controller.signal });
         }
         return options;
@@ -155,6 +196,10 @@ class Driver {
                     return (0, index_1.responseFormat)((0, error_handler_1.handleErrorResponse)(new Error(`Service ${idService.id} in driver not found`)));
                 }
                 const serviceInfo = (0, index_1.compileService)(idService, this.config.services);
+                /* istanbul ignore next */
+                if (!serviceInfo) {
+                    return (0, index_1.responseFormat)((0, error_handler_1.handleErrorResponse)(new Error(`Service ${idService.id} in driver not found`)));
+                }
                 const retryConfig = (0, retry_1.resolveRetryConfig)(this.config.retry, serviceInfo.retry);
                 // Middleware context
                 const ctx = {
@@ -168,9 +213,9 @@ class Driver {
                     if (cached)
                         return cached;
                 }
-                // Dedup for GET requests
-                const isGet = BODYLESS_METHODS.has(apiInfo.method);
-                const dedupKey = isGet ? this.dedup.buildKey(apiInfo.method, apiInfo.url, payload) : "";
+                // Dedup for bodyless methods (GET, HEAD, DELETE)
+                const isBodyless = BODYLESS_METHODS.has(apiInfo.method);
+                const dedupKey = isBodyless ? this.dedup.buildKey(apiInfo.method, apiInfo.url, payload) : "";
                 const execute = async () => {
                     return (0, retry_1.withRetry)(retryConfig, async () => {
                         var _a;
@@ -191,7 +236,7 @@ class Driver {
                 };
                 try {
                     this.emitRequest(String(idService.id), apiInfo.url, apiInfo.method);
-                    const result = isGet && dedupKey
+                    const result = isBodyless && dedupKey
                         ? await this.dedup.execute(dedupKey, execute)
                         : await execute();
                     this.emitResponse(String(idService.id), apiInfo.url, apiInfo.method, result.status, result.duration, result.ok);
@@ -210,6 +255,10 @@ class Driver {
                     return (0, index_1.responseFormat)((0, error_handler_1.handleErrorResponse)(new Error(`Service ${idService.id} in driver not found`)));
                 }
                 const serviceInfo = (0, index_1.compileService)(idService, this.config.services);
+                /* istanbul ignore next */
+                if (!serviceInfo) {
+                    return (0, index_1.responseFormat)((0, error_handler_1.handleErrorResponse)(new Error(`Service ${idService.id} in driver not found`)));
+                }
                 const retryConfig = (0, retry_1.resolveRetryConfig)(this.config.retry, serviceInfo.retry);
                 const ctx = {
                     url: apiInfo.url, method: apiInfo.method, serviceId: String(idService.id),
@@ -221,8 +270,8 @@ class Driver {
                     if (cached)
                         return cached;
                 }
-                const isGet = apiInfo.method === "get";
-                const dedupKey = isGet ? this.dedup.buildKey(apiInfo.method, apiInfo.url, payload !== null && payload !== void 0 ? payload : undefined) : "";
+                const isBodyless = BODYLESS_METHODS.has(apiInfo.method);
+                const dedupKey = isBodyless ? this.dedup.buildKey(apiInfo.method, apiInfo.url, payload !== null && payload !== void 0 ? payload : undefined) : "";
                 const execute = async () => {
                     return (0, retry_1.withRetry)(retryConfig, async () => {
                         var _a;
@@ -243,7 +292,7 @@ class Driver {
                 };
                 try {
                     this.emitRequest(String(idService.id), apiInfo.url, apiInfo.method);
-                    const result = isGet && dedupKey
+                    const result = isBodyless && dedupKey
                         ? await this.dedup.execute(dedupKey, execute)
                         : await execute();
                     this.emitResponse(String(idService.id), apiInfo.url, apiInfo.method, result.status, result.duration, result.ok);
@@ -254,6 +303,127 @@ class Driver {
                 }
                 catch (error) {
                     return (0, index_1.responseFormat)((0, error_handler_1.handleErrorResponse)(error));
+                }
+            },
+            execServiceByStream: async (idService, payload, options) => {
+                var _a;
+                const apiInfo = (0, index_1.compileUrlByService)(this.config, idService, payload !== null && payload !== void 0 ? payload : undefined, options);
+                if (apiInfo == null) {
+                    const emptyStream = (function () { return __asyncGenerator(this, arguments, function* () { }); })();
+                    return { ok: false, status: 500, headers: null, problem: `Service ${idService.id} in driver not found`, stream: emptyStream, abort: () => { } };
+                }
+                let url = apiInfo.url;
+                let requestOptions = Object.assign({}, apiInfo.options);
+                const serviceInfo = (0, index_1.compileService)(idService, this.config.services);
+                requestOptions = this.applyTimeout(requestOptions, serviceInfo.timeout);
+                applyAbortControllerSignal(requestOptions);
+                // SSE typically uses Accept: text/event-stream
+                if (!((_a = requestOptions.headers) === null || _a === void 0 ? void 0 : _a.hasOwnProperty("Accept"))) {
+                    requestOptions.headers = Object.assign(Object.assign({}, requestOptions.headers), { "Accept": "text/event-stream" });
+                }
+                if (!requestOptions.headers.hasOwnProperty("Content-Type") && apiInfo.method !== "get") {
+                    requestOptions.headers = Object.assign(Object.assign({}, requestOptions.headers), { "Content-Type": "application/json" });
+                }
+                const methodUpper = apiInfo.method.toUpperCase();
+                if (methodUpper !== "GET") {
+                    requestOptions = Object.assign(Object.assign({}, requestOptions), { method: methodUpper, body: JSON.stringify(apiInfo.payload) });
+                }
+                if (this.config.addRequestTransformFetch) {
+                    ({ url, requestOptions } = this.config.addRequestTransformFetch(url, requestOptions));
+                }
+                // Create an AbortController for manual abort
+                const abortController = new AbortController();
+                if (requestOptions.signal) {
+                    const existingSignal = requestOptions.signal;
+                    existingSignal.addEventListener("abort", () => abortController.abort(), { once: true });
+                }
+                requestOptions.signal = abortController.signal;
+                try {
+                    this.emitRequest(String(idService.id), url, apiInfo.method);
+                    const res = await fetch(url, requestOptions);
+                    if (!res.ok) {
+                        this.emitResponse(String(idService.id), url, apiInfo.method, res.status, 0, false);
+                        const emptyStream = (function () { return __asyncGenerator(this, arguments, function* () { }); })();
+                        return {
+                            ok: false, status: res.status, headers: res.headers,
+                            problem: res.statusText || "Request failed",
+                            stream: emptyStream, abort: () => abortController.abort(),
+                        };
+                    }
+                    if (!res.body) {
+                        this.emitResponse(String(idService.id), url, apiInfo.method, res.status, 0, false);
+                        const emptyStream = (function () { return __asyncGenerator(this, arguments, function* () { }); })();
+                        return {
+                            ok: false, status: res.status, headers: res.headers,
+                            problem: "No readable stream in response",
+                            stream: emptyStream, abort: () => abortController.abort(),
+                        };
+                    }
+                    this.emitResponse(String(idService.id), url, apiInfo.method, res.status, 0, true);
+                    const stream = (0, sse_parser_1.parseSSEStream)(res.body, abortController.signal);
+                    return {
+                        ok: true, status: res.status, headers: res.headers, problem: null,
+                        stream, abort: () => abortController.abort(),
+                    };
+                }
+                catch (error) {
+                    const emptyStream = (function () { return __asyncGenerator(this, arguments, function* () { }); })();
+                    const problem = error instanceof Error ? error.message : String(error);
+                    return { ok: false, status: 0, headers: null, problem, stream: emptyStream, abort: () => abortController.abort() };
+                }
+            },
+            execServiceByNDJSON: async (idService, payload, options) => {
+                var _a;
+                const apiInfo = (0, index_1.compileUrlByService)(this.config, idService, payload !== null && payload !== void 0 ? payload : undefined, options);
+                if (apiInfo == null) {
+                    const emptyStream = (function () { return __asyncGenerator(this, arguments, function* () { }); })();
+                    return { ok: false, status: 500, headers: null, problem: `Service ${idService.id} in driver not found`, stream: emptyStream, abort: () => { } };
+                }
+                let url = apiInfo.url;
+                let requestOptions = Object.assign({}, apiInfo.options);
+                const serviceInfo = (0, index_1.compileService)(idService, this.config.services);
+                requestOptions = this.applyTimeout(requestOptions, serviceInfo.timeout);
+                applyAbortControllerSignal(requestOptions);
+                if (!((_a = requestOptions.headers) === null || _a === void 0 ? void 0 : _a.hasOwnProperty("Accept"))) {
+                    requestOptions.headers = Object.assign(Object.assign({}, requestOptions.headers), { "Accept": "application/x-ndjson" });
+                }
+                if (!requestOptions.headers.hasOwnProperty("Content-Type") && apiInfo.method !== "get") {
+                    requestOptions.headers = Object.assign(Object.assign({}, requestOptions.headers), { "Content-Type": "application/json" });
+                }
+                const methodUpper = apiInfo.method.toUpperCase();
+                if (methodUpper !== "GET") {
+                    requestOptions = Object.assign(Object.assign({}, requestOptions), { method: methodUpper, body: JSON.stringify(apiInfo.payload) });
+                }
+                if (this.config.addRequestTransformFetch) {
+                    ({ url, requestOptions } = this.config.addRequestTransformFetch(url, requestOptions));
+                }
+                const abortController = new AbortController();
+                if (requestOptions.signal) {
+                    const existingSignal = requestOptions.signal;
+                    existingSignal.addEventListener("abort", () => abortController.abort(), { once: true });
+                }
+                requestOptions.signal = abortController.signal;
+                try {
+                    this.emitRequest(String(idService.id), url, apiInfo.method);
+                    const res = await fetch(url, requestOptions);
+                    if (!res.ok) {
+                        this.emitResponse(String(idService.id), url, apiInfo.method, res.status, 0, false);
+                        const emptyStream = (function () { return __asyncGenerator(this, arguments, function* () { }); })();
+                        return { ok: false, status: res.status, headers: res.headers, problem: res.statusText || "Request failed", stream: emptyStream, abort: () => abortController.abort() };
+                    }
+                    if (!res.body) {
+                        this.emitResponse(String(idService.id), url, apiInfo.method, res.status, 0, false);
+                        const emptyStream = (function () { return __asyncGenerator(this, arguments, function* () { }); })();
+                        return { ok: false, status: res.status, headers: res.headers, problem: "No readable stream in response", stream: emptyStream, abort: () => abortController.abort() };
+                    }
+                    this.emitResponse(String(idService.id), url, apiInfo.method, res.status, 0, true);
+                    const stream = (0, ndjson_parser_1.parseNDJSONStream)(res.body, abortController.signal);
+                    return { ok: true, status: res.status, headers: res.headers, problem: null, stream, abort: () => abortController.abort() };
+                }
+                catch (error) {
+                    const emptyStream = (function () { return __asyncGenerator(this, arguments, function* () { }); })();
+                    const problem = error instanceof Error ? error.message : String(error);
+                    return { ok: false, status: 0, headers: null, problem, stream: emptyStream, abort: () => abortController.abort() };
                 }
             },
             getInfoURL: (idService, payload = {}) => {
@@ -282,7 +452,7 @@ class Driver {
         return httpDriver;
     }
     async executeAxiosCall(apiInfo, idService) {
-        var _a, _b, _c, _d, _e;
+        var _a, _b, _c, _d;
         try {
             const payloadConvert = apiInfo.payload;
             const optHeaders = apiInfo.options.headers;
@@ -292,12 +462,11 @@ class Driver {
                     // axios handles multipart boundaries automatically
                 }
             }
-            let opts = this.applyTimeout(apiInfo.options, (0, index_1.compileService)(idService, this.config.services).timeout);
-            if (!opts.signal && ((_a = opts.abortController) === null || _a === void 0 ? void 0 : _a.signal)) {
-                opts.signal = opts.abortController.signal;
-            }
+            const axiosServiceInfo = (0, index_1.compileService)(idService, this.config.services);
+            let opts = this.applyTimeout(apiInfo.options, axiosServiceInfo.timeout);
+            applyAbortControllerSignal(opts);
             const start = performance.now();
-            const axiosCall = (_b = this.axiosInstance[apiInfo.method]) === null || _b === void 0 ? void 0 : _b.bind(this.axiosInstance);
+            const axiosCall = (_a = this.axiosInstance[apiInfo.method]) === null || _a === void 0 ? void 0 : _a.bind(this.axiosInstance);
             let rawResult;
             if (axiosCall) {
                 if (BODYLESS_METHODS.has(apiInfo.method)) {
@@ -329,9 +498,9 @@ class Driver {
                     return (0, index_1.responseFormat)((0, error_handler_1.handleErrorResponse)(new errors_1.TimeoutError()));
                 }
                 const axResponse = axErr.response;
-                return (0, index_1.responseFormat)({ ok: false, status: (_c = axResponse === null || axResponse === void 0 ? void 0 : axResponse.status) !== null && _c !== void 0 ? _c : 0,
-                    headers: Driver.normalizeAxiosHeaders((_d = axResponse === null || axResponse === void 0 ? void 0 : axResponse.headers) !== null && _d !== void 0 ? _d : null),
-                    duration: 0, data: ((_e = axResponse === null || axResponse === void 0 ? void 0 : axResponse.data) !== null && _e !== void 0 ? _e : null),
+                return (0, index_1.responseFormat)({ ok: false, status: (_b = axResponse === null || axResponse === void 0 ? void 0 : axResponse.status) !== null && _b !== void 0 ? _b : 0,
+                    headers: Driver.normalizeAxiosHeaders((_c = axResponse === null || axResponse === void 0 ? void 0 : axResponse.headers) !== null && _c !== void 0 ? _c : null),
+                    duration: 0, data: ((_d = axResponse === null || axResponse === void 0 ? void 0 : axResponse.data) !== null && _d !== void 0 ? _d : null),
                     problem: Driver.mapAxiosErrorToProblem(axErr), originalError: axErr.message, });
             }
             if (error instanceof Error) {
@@ -345,15 +514,14 @@ class Driver {
         }
     }
     async executeFetchCall(apiInfo, idService, options) {
-        var _a, _b;
+        var _a;
         try {
             let url = apiInfo.url;
             let requestOptions = Object.assign({}, apiInfo.options);
-            requestOptions = this.applyTimeout(requestOptions, (0, index_1.compileService)(idService, this.config.services).timeout);
-            if (!requestOptions.signal && ((_a = requestOptions.abortController) === null || _a === void 0 ? void 0 : _a.signal)) {
-                requestOptions.signal = requestOptions.abortController.signal;
-            }
-            if (!((_b = requestOptions.headers) === null || _b === void 0 ? void 0 : _b.hasOwnProperty("Content-Type"))) {
+            const fetchServiceInfo = (0, index_1.compileService)(idService, this.config.services);
+            requestOptions = this.applyTimeout(requestOptions, fetchServiceInfo.timeout);
+            applyAbortControllerSignal(requestOptions);
+            if (!((_a = requestOptions.headers) === null || _a === void 0 ? void 0 : _a.hasOwnProperty("Content-Type"))) {
                 requestOptions.headers = Object.assign(Object.assign({}, requestOptions.headers), { "Content-Type": "application/json" });
             }
             const methodUpper = apiInfo.method.toUpperCase();

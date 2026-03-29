@@ -40,18 +40,24 @@ console.log(user.ok, user.status, user.data, user.duration);
 
 - Dual HTTP paths — Axios (`execService`) and Fetch (`execServiceByFetch`)
 - Full TypeScript support with generic `ResponseFormat<T>`
+- SSE streaming (`execServiceByStream`) with spec-compliant parser
+- NDJSON streaming (`execServiceByNDJSON`) for line-delimited JSON
+- GraphQL client helper (`createGraphQLClient`) with query/mutation shortcuts
+- Upload/download progress tracking via ReadableStream
+- WebSocket client with auto-reconnect and typed messages
 - Retry with fixed/exponential backoff (global or per-service)
-- In-memory response caching with TTL
-- Automatic request deduplication for concurrent GET calls
-- Per-service and global timeout via AbortController
-- Middleware pipeline (onion model)
+- In-memory response caching with TTL, max-size eviction, and periodic cleanup
+- Automatic request deduplication for concurrent bodyless calls (GET, HEAD, DELETE)
+- Per-service and global timeout via `AbortSignal.timeout()` with fallback
+- Middleware pipeline (onion model) with double-call protection
 - Observability hooks (`onRequest` / `onResponse`)
 - URL versioning with multiple positioning strategies
-- Sync/async request and response transforms (Axios)
-- Request/response transforms (Fetch)
+- URL parameter encoding via `encodeURIComponent` for safe URL construction
+- Sync/async request and response transforms (Axios & Fetch)
 - Token refresh interceptor with queue management
-- Multipart/form-data with automatic boundary handling
+- Multipart/form-data with bracket notation (`parent[child]`) and automatic boundary handling
 - Standardized error normalization (TimeoutError, NetworkError, etc.)
+- Proper handling of 204 No Content and 304 Not Modified responses
 
 ## Response Shape
 
@@ -130,6 +136,7 @@ const api = new DriverBuilder()
 ```
 
 Only successful responses are cached. Error responses are never cached.
+The cache has a max size of 1000 entries with LRU eviction and automatic periodic cleanup of expired entries.
 
 ```ts
 interface CacheConfig {
@@ -155,7 +162,7 @@ const services: ServiceApi[] = [
 ];
 ```
 
-Timeout creates an AbortController internally. If a `signal` is already provided in options, timeout is skipped.
+Timeout uses `AbortSignal.timeout()` when available (Node 17.3+, modern browsers) for automatic cleanup. Falls back to `AbortController` + `setTimeout` with `unref()` in older environments. If a `signal` is already provided in options, timeout is skipped.
 
 ## Middleware
 
@@ -183,8 +190,7 @@ const api = new DriverBuilder()
   .build();
 ```
 
-Middleware can short-circuit by not calling `next()`.
-
+Middleware can short-circuit by not calling `next()`. Calling `next()` multiple times is safe — the core function will only execute once.
 ## Observability Hooks
 
 ```ts
@@ -250,6 +256,12 @@ const api3 = new DriverBuilder()
   .build();
 // → https://v1.api.example.com/users
 ```
+
+Position strategies:
+- `after-base` (default): `https://api.example.com/v1/users`
+- `before-endpoint`: `https://api.example.com/v1/users` (version inserted between base and endpoint)
+- `prefix`: `https://v1.api.example.com/users` (version as subdomain)
+- `custom`: uses `template` string with `{baseURL}`, `{version}`, `{endpoint}` placeholders
 
 Service-level `version` overrides the global default:
 
@@ -371,7 +383,132 @@ const res = await httpClientFetch({
 
 ## Multipart
 
-When `Content-Type` is `multipart/form-data`, the library removes the explicit header so the platform sets the boundary automatically. The payload is converted to FormData.
+When `Content-Type` is `multipart/form-data`, the library removes the explicit header so the platform sets the boundary automatically. The payload is converted to FormData using bracket notation for nested objects (`parent[child]`) and arrays (`items[0]`), which is compatible with most backend frameworks (Express, Django, Rails, Spring).
+
+## SSE Streaming
+
+Stream Server-Sent Events via Fetch ReadableStream:
+
+```ts
+const services = [
+  { id: "chat.stream", url: "api/chat/completions", method: MethodAPI.post },
+];
+
+const result = await api.execServiceByStream(
+  { id: "chat.stream" },
+  { model: "gpt-4", messages: [{ role: "user", content: "Hello" }], stream: true }
+);
+
+if (result.ok) {
+  for await (const event of result.stream) {
+    // event: { event: "message", data: "...", id: "", retry?: number }
+    const chunk = JSON.parse(event.data);
+    process.stdout.write(chunk.choices[0].delta.content ?? "");
+  }
+}
+
+// Abort anytime
+result.abort();
+```
+
+Returns `StreamResponseFormat` with `stream: AsyncGenerator<SSEEvent>` and `abort()`.
+
+## NDJSON Streaming
+
+Stream Newline-Delimited JSON (one JSON object per line):
+
+```ts
+const services = [
+  { id: "logs.stream", url: "api/logs/tail", method: MethodAPI.get },
+];
+
+const result = await api.execServiceByNDJSON<LogEntry>({ id: "logs.stream" });
+
+if (result.ok) {
+  for await (const entry of result.stream) {
+    console.log(entry.timestamp, entry.message); // typed LogEntry
+  }
+}
+```
+
+Returns `NDJSONStreamResponseFormat<T>` with `stream: AsyncGenerator<T>` and `abort()`.
+
+## GraphQL
+
+Convenience wrapper over `execService` / `execServiceByFetch`:
+
+```ts
+import { createGraphQLClient } from "@alvin0/http-driver";
+
+const services = [
+  { id: "graphql", url: "graphql", method: MethodAPI.post },
+];
+
+const gql = createGraphQLClient(api, "graphql");
+
+// Query
+const users = await gql.query<{ users: User[] }>(`
+  query($limit: Int) { users(limit: $limit) { id name } }
+`, { limit: 10 });
+// users.data.data.users
+
+// Mutation
+const created = await gql.mutation<{ createUser: User }>(`
+  mutation($input: CreateUserInput!) { createUser(input: $input) { id name } }
+`, { input: { name: "John" } });
+
+// Use Fetch path instead of Axios
+const gqlFetch = createGraphQLClient(api, "graphql", { useFetch: true });
+```
+
+## Upload & Download Progress
+
+Standalone utilities for progress tracking with Fetch:
+
+```ts
+import { fetchWithDownloadProgress, createUploadProgressBody } from "@alvin0/http-driver";
+
+// Download progress
+const res = await fetch("https://example.com/large-file.zip");
+const buffer = await fetchWithDownloadProgress(res, ({ loaded, total, percent }) => {
+  console.log(`${percent}% (${loaded}/${total} bytes)`);
+});
+
+// Upload progress
+const jsonBody = JSON.stringify(largePayload);
+const { body } = createUploadProgressBody(jsonBody, ({ loaded, total, percent }) => {
+  console.log(`Uploading: ${percent}%`);
+});
+await fetch("https://example.com/upload", { method: "POST", body });
+```
+
+`percent` is -1 when total size is unknown.
+
+## WebSocket
+
+Lightweight wrapper with auto-reconnect and typed messages:
+
+```ts
+import { createWebSocketClient } from "@alvin0/http-driver";
+
+const ws = createWebSocketClient({
+  url: "wss://api.example.com/ws",
+  autoReconnect: true,
+  maxReconnectAttempts: 5,
+  reconnectDelay: 1000,
+  reconnectBackoff: "exponential",
+});
+
+ws.onOpen(() => console.log("Connected"));
+ws.onMessage<ChatMessage>((msg) => console.log(msg.data));
+ws.onError((err) => console.error(err));
+ws.onClose(() => console.log("Disconnected"));
+
+ws.send({ type: "subscribe", channel: "updates" });
+ws.close();
+ws.reconnect(); // manual reconnect
+console.log(ws.state); // "connecting" | "open" | "closing" | "closed"
+```
 
 ## Usage with React Hooks
 
@@ -590,9 +727,21 @@ Benefits: type-safe IDs with auto-complete, consistent naming, easier refactors.
 |--------|-------------|
 | `execService(idService, payload?, options?)` | Execute via Axios |
 | `execServiceByFetch(idService, payload?, options?)` | Execute via Fetch |
+| `execServiceByStream(idService, payload?, options?)` | SSE streaming via Fetch |
+| `execServiceByNDJSON(idService, payload?, options?)` | NDJSON streaming via Fetch |
 | `getInfoURL(idService, payload?)` | Compile URL without request |
 
 The built driver also exposes all Axios instance methods (`get`, `post`, `put`, `delete`, etc.).
+
+### Standalone Utilities
+
+| Export | Description |
+|--------|-------------|
+| `createGraphQLClient(driver, serviceId, options?)` | GraphQL query/mutation helper |
+| `fetchWithDownloadProgress(response, onProgress)` | Download progress tracking |
+| `createUploadProgressBody(body, onProgress)` | Upload progress tracking |
+| `createWebSocketClient(config)` | WebSocket with auto-reconnect |
+| `parseNDJSONStream(stream, signal?)` | Raw NDJSON stream parser |
 
 ### ServiceApi
 

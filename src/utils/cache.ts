@@ -5,9 +5,13 @@ interface CacheEntry {
   expiry: number;
 }
 
+const DEFAULT_MAX_SIZE = 1000;
+
 export class ResponseCache {
   private store = new Map<string, CacheEntry>();
   private config: Required<CacheConfig>;
+  private maxSize: number;
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config?: CacheConfig) {
     this.config = {
@@ -15,6 +19,16 @@ export class ResponseCache {
       ttl: config?.ttl ?? 30000,
       getOnly: config?.getOnly ?? true,
     };
+    this.maxSize = DEFAULT_MAX_SIZE;
+
+    // Periodic cleanup of expired entries every TTL interval
+    if (this.config.enabled) {
+      this.cleanupTimer = setInterval(() => this.evictExpired(), this.config.ttl);
+      // Allow the process to exit even if the timer is still running
+      if (this.cleanupTimer && typeof this.cleanupTimer === 'object' && 'unref' in this.cleanupTimer) {
+        (this.cleanupTimer as NodeJS.Timeout).unref();
+      }
+    }
   }
 
   get enabled(): boolean {
@@ -38,6 +52,11 @@ export class ResponseCache {
   }
 
   set(key: string, data: ResponseFormat): void {
+    // Evict oldest entries if cache is full
+    if (this.store.size >= this.maxSize && !this.store.has(key)) {
+      const firstKey = this.store.keys().next().value;
+      if (firstKey !== undefined) this.store.delete(firstKey);
+    }
     this.store.set(key, { data, expiry: Date.now() + this.config.ttl });
   }
 
@@ -53,5 +72,24 @@ export class ResponseCache {
 
   size(): number {
     return this.store.size;
+  }
+
+  /** Remove all expired entries */
+  private evictExpired(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.store) {
+      if (now > entry.expiry) {
+        this.store.delete(key);
+      }
+    }
+  }
+
+  /** Stop the periodic cleanup timer */
+  destroy(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    this.store.clear();
   }
 }

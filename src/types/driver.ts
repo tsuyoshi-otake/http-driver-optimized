@@ -52,6 +52,36 @@ export type MiddlewareFn = (
 export type OnRequestHook = (info: { url: string; method: string; serviceId: string; timestamp: number }) => void;
 export type OnResponseHook = (info: { url: string; method: string; serviceId: string; status: number; duration: number; ok: boolean }) => void;
 
+// --- SSE Streaming ---
+export interface SSEEvent {
+  event: string;
+  data: string;
+  id: string;
+  retry?: number;
+}
+
+export interface StreamResponseFormat {
+  ok: boolean;
+  status: number;
+  headers: Headers | null;
+  problem: string | null;
+  /** Async iterable of SSE events. Iterate with for-await-of. */
+  stream: AsyncGenerator<SSEEvent, void, undefined>;
+  /** Abort the stream */
+  abort: () => void;
+}
+
+export interface NDJSONStreamResponseFormat<T = unknown> {
+  ok: boolean;
+  status: number;
+  headers: Headers | null;
+  problem: string | null;
+  /** Async iterable of parsed JSON objects. Iterate with for-await-of. */
+  stream: AsyncGenerator<T, void, undefined>;
+  /** Abort the stream */
+  abort: () => void;
+}
+
 export interface ServiceApi {
   id: string;
   url: string;
@@ -190,6 +220,18 @@ export interface HttpDriverInstance {
     payload?: Record<string, unknown> | null,
     options?: Record<string, unknown>
   ) => Promise<ResponseFormat<T>>;
+
+  execServiceByStream: (
+    idService: ServiceUrlCompile,
+    payload?: Record<string, unknown> | null,
+    options?: Record<string, unknown>
+  ) => Promise<StreamResponseFormat>;
+
+  execServiceByNDJSON: <T = unknown>(
+    idService: ServiceUrlCompile,
+    payload?: Record<string, unknown> | null,
+    options?: Record<string, unknown>
+  ) => Promise<NDJSONStreamResponseFormat<T>>;
 
   getInfoURL: (
     idService: ServiceUrlCompile,

@@ -7,12 +7,14 @@ exports.executeMiddleware = executeMiddleware;
  */
 async function executeMiddleware(middlewares, ctx, core) {
     let index = 0;
+    let coreExecuted = false;
     const next = async () => {
         if (index < middlewares.length) {
             const mw = middlewares[index++];
             await mw(ctx, next);
         }
-        else {
+        else if (!coreExecuted) {
+            coreExecuted = true;
             await core();
         }
     };

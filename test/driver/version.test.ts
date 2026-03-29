@@ -43,7 +43,7 @@ describe("Version Configuration Integration", () => {
       .withBaseURL("https://api.example.com").withServices(services)
       .withVersionConfig({ enabled: true, position: "before-endpoint", defaultVersion: 1 })
       .build();
-    expect(driver.getInfoURL({ id: "user.list" }).fullUrl).toBe("https://api.example.com/users/v1");
+    expect(driver.getInfoURL({ id: "user.list" }).fullUrl).toBe("https://api.example.com/v1/users");
   });
 
   test("subdomain versioning", () => {

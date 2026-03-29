@@ -139,8 +139,8 @@ describe("objectToFormData via compileBodyFetchWithContextType", () => {
       items: [{ name: "item1" }, { name: "item2" }],
     });
     expect(fd).toBeInstanceOf(FormData);
-    expect((fd as FormData).get("items[0].name")).toBe("item1");
-    expect((fd as FormData).get("items[1].name")).toBe("item2");
+    expect((fd as FormData).get("items[0][name]")).toBe("item1");
+    expect((fd as FormData).get("items[1][name]")).toBe("item2");
   });
 
   test("handles primitive values inside arrays", () => {
@@ -158,8 +158,8 @@ describe("objectToFormData via compileBodyFetchWithContextType", () => {
       meta: { author: "John", version: "1.0" },
     });
     expect(fd).toBeInstanceOf(FormData);
-    expect((fd as FormData).get("meta.author")).toBe("John");
-    expect((fd as FormData).get("meta.version")).toBe("1.0");
+    expect((fd as FormData).get("meta[author]")).toBe("John");
+    expect((fd as FormData).get("meta[version]")).toBe("1.0");
   });
 
   test("handles mixed payload with files, arrays, nested objects, and primitives", () => {
@@ -175,7 +175,7 @@ describe("objectToFormData via compileBodyFetchWithContextType", () => {
     expect((fd as FormData).get("title")).toBe("Upload");
     expect((fd as FormData).has("file")).toBe(true);
     expect((fd as FormData).get("tags[0]")).toBe("a");
-    expect((fd as FormData).get("meta.key")).toBe("val");
+    expect((fd as FormData).get("meta[key]")).toBe("val");
     // null values should be removed by removeNullValues
     expect((fd as FormData).has("empty")).toBe(false);
   });
@@ -267,7 +267,7 @@ describe("isFileOrBlobLike/isFileOrBlobObject null constructor/toString branches
     });
     expect(fd).toBeInstanceOf(FormData);
     // obj is a plain object without constructor, should be recursed into
-    expect((fd as FormData).get("data.field")).toBe("value");
+    expect((fd as FormData).get("data[field]")).toBe("value");
   });
 
   test("FormData with object that has no toString (?.() ?? '' fallback)", () => {
@@ -295,7 +295,7 @@ describe("isFileOrBlobLike/isFileOrBlobObject null constructor/toString branches
       items: [obj, "plain"],
     });
     expect(fd).toBeInstanceOf(FormData);
-    expect((fd as FormData).get("items[0].name")).toBe("test");
+    expect((fd as FormData).get("items[0][name]")).toBe("test");
     expect((fd as FormData).get("items[1]")).toBe("plain");
   });
 });

@@ -51,7 +51,10 @@ const TRAILING_SLASHES = /\/+$/;
 const LEADING_SLASHES = /^\/+/;
 const URL_PARAMS_PATTERN = /\{(\w+)\}/g;
 function replaceParamsInUrl(url, params) {
-    return url.replace(URL_PARAMS_PATTERN, (_match, paramName) => params[paramName]);
+    return url.replace(URL_PARAMS_PATTERN, (_match, paramName) => {
+        const value = params[paramName];
+        return value !== undefined ? encodeURIComponent(value) : _match;
+    });
 }
 function findServiceApi(services, idToFind) {
     var _a;
@@ -97,7 +100,7 @@ function buildUrlWithVersion(baseURL, endpoint, version, versionConfig) {
             return joinUrl(`${versionString}.${baseURL}`, endpoint);
         }
         case 'before-endpoint':
-            return joinUrl(baseURL, endpoint, versionString);
+            return joinUrl(baseURL, versionString, endpoint);
         case 'custom':
             if (versionConfig.template) {
                 return versionConfig.template
@@ -257,7 +260,7 @@ function objectToFormData(payload, formData = new FormData(), parentKey = null) 
     for (const key in payload) {
         if (payload.hasOwnProperty(key)) {
             const value = payload[key];
-            const formKey = parentKey ? `${parentKey}.${key}` : key;
+            const formKey = parentKey ? `${parentKey}[${key}]` : key;
             if (Array.isArray(value)) {
                 value.forEach((subValue, index) => {
                     if (isFileOrBlob(subValue)) {

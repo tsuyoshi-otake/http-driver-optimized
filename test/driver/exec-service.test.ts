@@ -961,3 +961,83 @@ describe("execService", () => {
       expect((res.headers as any)["x-plain"]).toBe("direct");
     });
   });
+
+
+describe("abortController in service-level options coverage", () => {
+  test("execService uses abortController.signal from options when no signal set", async () => {
+    const abortController = new AbortController();
+    const driver = buildDriver([svcGet]);
+    let capturedOpts: any;
+    (driver as any).defaults.adapter = async (config: any) => {
+      capturedOpts = config;
+      return { data: { ok: true }, status: 200, statusText: "OK", headers: {}, config };
+    };
+    // Pass abortController via call-level options (no timeout configured → applyTimeout returns opts unchanged)
+    await driver.execService({ id: "svc.get", params: { id: "1" } }, {}, { abortController });
+    // The abortController.signal should be picked up and set as signal
+    expect(capturedOpts.signal).toBeDefined();
+  });
+
+  test("execService skips abortController when signal already set by timeout", async () => {
+    const abortController = new AbortController();
+    // Build driver WITH timeout so applyTimeout sets signal first
+    const driver = new DriverBuilder()
+      .withBaseURL("http://example.com")
+      .withServices([svcGet])
+      .withTimeout(5000)
+      .build();
+    let capturedOpts: any;
+    (driver as any).defaults.adapter = async (config: any) => {
+      capturedOpts = config;
+      return { data: { ok: true }, status: 200, statusText: "OK", headers: {}, config };
+    };
+    // Pass both timeout (via driver config) and abortController — signal is already set by applyTimeout
+    await driver.execService({ id: "svc.get", params: { id: "1" } }, {}, { abortController });
+    // Signal should be the timeout signal, not the abortController signal
+    expect(capturedOpts.signal).toBeDefined();
+    expect(capturedOpts.signal).not.toBe(abortController.signal);
+  });
+
+  test("execServiceByFetch uses abortController.signal from options when no signal set", async () => {
+    const origFetch = globalThis.fetch;
+    const abortController = new AbortController();
+    let capturedOptions: any;
+    globalThis.fetch = jest.fn().mockImplementation((_url, opts) => {
+      capturedOptions = opts;
+      return Promise.resolve({
+        ok: true, status: 200,
+        headers: new Headers({ "Content-Type": "application/json" }),
+        text: async () => '{"ok":true}',
+      });
+    });
+    const driver = buildDriver([svcGet]);
+    // Pass abortController via call-level options (no timeout configured → applyTimeout returns opts unchanged)
+    await driver.execServiceByFetch({ id: "svc.get", params: { id: "1" } }, {}, { abortController });
+    expect(capturedOptions.signal).toBeDefined();
+    globalThis.fetch = origFetch;
+  });
+
+  test("execServiceByFetch skips abortController when signal already set by timeout", async () => {
+    const origFetch = globalThis.fetch;
+    const abortController = new AbortController();
+    let capturedOptions: any;
+    globalThis.fetch = jest.fn().mockImplementation((_url, opts) => {
+      capturedOptions = opts;
+      return Promise.resolve({
+        ok: true, status: 200,
+        headers: new Headers({ "Content-Type": "application/json" }),
+        text: async () => '{"ok":true}',
+      });
+    });
+    // Build driver WITH timeout so applyTimeout sets signal first
+    const driver = new DriverBuilder()
+      .withBaseURL("http://example.com")
+      .withServices([svcGet])
+      .withTimeout(5000)
+      .build();
+    await driver.execServiceByFetch({ id: "svc.get", params: { id: "1" } }, {}, { abortController });
+    expect(capturedOptions.signal).toBeDefined();
+    expect(capturedOptions.signal).not.toBe(abortController.signal);
+    globalThis.fetch = origFetch;
+  });
+});

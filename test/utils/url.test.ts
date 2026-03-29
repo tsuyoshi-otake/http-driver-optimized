@@ -19,6 +19,16 @@ describe("replaceParamsInUrl", () => {
   test("returns original url when no matching placeholders", () => {
     expect(replaceParamsInUrl("/about", { id: "123" })).toBe("/about");
   });
+
+  test("encodes special characters in param values", () => {
+    expect(replaceParamsInUrl("/users/{name}", { name: "john doe" }))
+      .toBe("/users/john%20doe");
+  });
+
+  test("keeps placeholder intact when param key is missing from map", () => {
+    expect(replaceParamsInUrl("/users/{userId}/posts/{postId}", { userId: "42" }))
+      .toBe("/users/42/posts/{postId}");
+  });
 });
 
 describe("findServiceApi", () => {
@@ -165,7 +175,7 @@ describe("buildUrlWithVersion", () => {
 
   test("before-endpoint position", () => {
     expect(buildUrlWithVersion(baseURL, "users", 1, { enabled: true, position: "before-endpoint" }))
-      .toBe("https://api.example.com/users/v1");
+      .toBe("https://api.example.com/v1/users");
   });
 
   test("prefix position with protocol", () => {

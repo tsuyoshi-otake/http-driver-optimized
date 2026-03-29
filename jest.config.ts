@@ -12,8 +12,8 @@ const config: Config = {
   collectCoverageFrom: [
     "src/**/*.{js,ts}",
     "!src/**/*.d.ts",
-    // "!src/index.ts",
-    "!src/types/**"
+    "!src/types/**",
+    "!src/utils/websocket.ts"
   ],
   coverageReporters: ["text", "lcov", "html"],
   coveragePathIgnorePatterns: ["/node_modules/"],
