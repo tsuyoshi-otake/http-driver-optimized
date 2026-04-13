@@ -11,6 +11,12 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
 - All 412 tests now pass successfully with 100% coverage
 
 ## Recent Changes
+- **Repository Relocation / Rename (COMPLETED)**:
+  - GitHub repo was moved to `tsuyoshi-otake/http-driver-optimized`
+  - Local `origin` now points to `https://github.com/tsuyoshi-otake/http-driver-optimized.git`
+  - [`package.json`](../package.json) repository, bugs, and homepage URLs now target the renamed repo
+  - NPM package name remains `@alvin0/http-driver` to avoid an unrequested breaking publish-name change
+
 - **Performance Optimization Cycle (COMPLETED)**:
   - **Benchmark Harness**:
     - Added [`bench/optimizations.cjs`](../bench/optimizations.cjs)

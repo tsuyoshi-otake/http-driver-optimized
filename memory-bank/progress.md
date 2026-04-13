@@ -3,6 +3,7 @@
 Updated: 2026-04-13
 
 ## Current Status Summary
+- **REPO RENAMED**: GitHub origin is now `tsuyoshi-otake/http-driver-optimized`
 - **ALL TESTS PASSING**: 412 tests pass with 100% coverage
 - **BENCHMARK HARNESS ADDED**: `npm run bench:optimizations` measures driver and stream hot paths
 - **PERFORMANCE IMPROVEMENTS SHIPPED**:
@@ -64,6 +65,7 @@ Updated: 2026-04-13
 - **RESOLVED**: Per-chunk full-buffer splitting in SSE/NDJSON parsers
 
 ## Recent Decisions
+- Keep the NPM package name as `@alvin0/http-driver` for now and only rename the GitHub repository / metadata to `http-driver-optimized`
 - Prioritize explicit responseType over content-type auto-detection in fetch responses
 - Maintain full backward compatibility for JSON responses
 - Keep strict JSON in Fetch for now; document override via [`withAddTransformResponseFetch()`](../src/index.ts:365).
