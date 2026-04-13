@@ -25,6 +25,7 @@ describe("fetchWithDownloadProgress", () => {
     );
 
     expect(result.byteLength).toBe(5);
+    expect(Array.from(new Uint8Array(result))).toEqual([1, 2, 3, 4, 5]);
     expect(progress.length).toBe(2);
     expect(progress[0]).toEqual({ loaded: 3, total: 5, percent: 60 });
     expect(progress[1]).toEqual({ loaded: 5, total: 5, percent: 100 });
@@ -40,6 +41,26 @@ describe("fetchWithDownloadProgress", () => {
     );
 
     expect(progress[0].percent).toBe(-1);
+  });
+
+  test("falls back when content-length is smaller than the actual body", async () => {
+    const chunk1 = new Uint8Array([1, 2, 3]);
+    const chunk2 = new Uint8Array([4, 5, 6]);
+
+    const result = await fetchWithDownloadProgress(createMockResponse([chunk1, chunk2], 4), () => {});
+
+    expect(result.byteLength).toBe(6);
+    expect(Array.from(new Uint8Array(result))).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  test("trims the result when content-length is larger than the actual body", async () => {
+    const chunk1 = new Uint8Array([1, 2, 3]);
+    const chunk2 = new Uint8Array([4, 5]);
+
+    const result = await fetchWithDownloadProgress(createMockResponse([chunk1, chunk2], 8), () => {});
+
+    expect(result.byteLength).toBe(5);
+    expect(Array.from(new Uint8Array(result))).toEqual([1, 2, 3, 4, 5]);
   });
 
   test("handles response with no body", async () => {

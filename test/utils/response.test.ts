@@ -50,6 +50,16 @@ describe("compileBodyFetchWithContextType", () => {
     expect(typeof (result as FormData).append).toBe("function");
   });
 
+  test("ignores inherited enumerable properties when building FormData", () => {
+    const payload = Object.create({ inherited: "skip-me" }) as Record<string, unknown>;
+    payload.own = "keep-me";
+
+    const fd = compileBodyFetchWithContextType("multipart/form-data", payload);
+
+    expect((fd as FormData).get("own")).toBe("keep-me");
+    expect((fd as FormData).has("inherited")).toBe(false);
+  });
+
   test("returns JSON string for unknown content type", () => {
     expect(compileBodyFetchWithContextType("text/plain", { k: "v" })).toBe(JSON.stringify({ k: "v" }));
   });
@@ -178,6 +188,29 @@ describe("objectToFormData via compileBodyFetchWithContextType", () => {
     expect((fd as FormData).get("meta[key]")).toBe("val");
     // null values should be removed by removeNullValues
     expect((fd as FormData).has("empty")).toBe(false);
+  });
+
+  test("removes nullish object properties inline without changing array-origin values", () => {
+    const fd = compileBodyFetchWithContextType("multipart/form-data", {
+      meta: {
+        keep: "yes",
+        drop: null,
+        nested: {
+          ok: "value",
+          missing: undefined,
+        },
+      },
+      list: [null, { keep: "still-here", missing: null }],
+    });
+
+    expect(fd).toBeInstanceOf(FormData);
+    expect((fd as FormData).get("meta[keep]")).toBe("yes");
+    expect((fd as FormData).has("meta[drop]")).toBe(false);
+    expect((fd as FormData).get("meta[nested][ok]")).toBe("value");
+    expect((fd as FormData).has("meta[nested][missing]")).toBe(false);
+    expect((fd as FormData).get("list[0]")).toBe("null");
+    expect((fd as FormData).get("list[1][keep]")).toBe("still-here");
+    expect((fd as FormData).get("list[1][missing]")).toBe("null");
   });
 });
 

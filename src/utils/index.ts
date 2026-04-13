@@ -265,34 +265,43 @@ function isFileOrBlob(value: unknown): boolean {
 function objectToFormData(
   payload: Record<string, unknown>,
   formData: FormData = new FormData(),
-  parentKey: string | null = null
+  parentKey: string | null = null,
+  skipNullishObjectValues = true
 ): FormData {
-  if (parentKey === null) {
-    payload = removeNullValues(payload);
-  }
-
   for (const key in payload) {
-    if (payload.hasOwnProperty(key)) {
-      const value = payload[key];
-      const formKey = parentKey ? `${parentKey}[${key}]` : key;
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
 
-      if (Array.isArray(value)) {
-        value.forEach((subValue: unknown, index: number) => {
-          if (isFileOrBlob(subValue)) {
-            formData.append(`${formKey}[${index}]`, subValue as any);
-          } else if (typeof subValue === "object" && subValue !== null) {
-            objectToFormData(subValue as Record<string, unknown>, formData, `${formKey}[${index}]`);
-          } else {
-            formData.append(`${formKey}[${index}]`, String(subValue));
-          }
-        });
-      } else if (isFileOrBlob(value)) {
-        formData.append(formKey, value as any);
-      } else if (typeof value === "object" && value !== null) {
-        objectToFormData(value as Record<string, unknown>, formData, formKey);
-      } else {
-        formData.append(formKey, String(value));
-      }
+    const value = payload[key];
+    if (skipNullishObjectValues && (value === null || value === undefined)) continue;
+
+    const formKey = parentKey ? `${parentKey}[${key}]` : key;
+
+    if (Array.isArray(value)) {
+      value.forEach((subValue: unknown, index: number) => {
+        if (isFileOrBlob(subValue)) {
+          formData.append(`${formKey}[${index}]`, subValue as any);
+        } else if (typeof subValue === "object" && subValue !== null) {
+          objectToFormData(
+            subValue as Record<string, unknown>,
+            formData,
+            `${formKey}[${index}]`,
+            false
+          );
+        } else {
+          formData.append(`${formKey}[${index}]`, String(subValue));
+        }
+      });
+    } else if (isFileOrBlob(value)) {
+      formData.append(formKey, value as any);
+    } else if (typeof value === "object" && value !== null) {
+      objectToFormData(
+        value as Record<string, unknown>,
+        formData,
+        formKey,
+        skipNullishObjectValues
+      );
+    } else {
+      formData.append(formKey, String(value));
     }
   }
   return formData;

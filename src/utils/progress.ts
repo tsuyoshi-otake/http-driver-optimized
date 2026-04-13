@@ -6,6 +6,24 @@ export interface ProgressInfo {
 
 export type ProgressCallback = (info: ProgressInfo) => void;
 
+function toOwnedArrayBuffer(buffer: Uint8Array, usedBytes = buffer.byteLength): ArrayBuffer {
+  return (usedBytes === buffer.byteLength
+    ? buffer.buffer
+    : buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + usedBytes)) as ArrayBuffer;
+}
+
+function mergeChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {
+  const result = new Uint8Array(totalBytes);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return result;
+}
+
 /**
  * Reads a fetch Response body with download progress tracking.
  * Returns the complete body as an ArrayBuffer.
@@ -23,7 +41,8 @@ export async function fetchWithDownloadProgress(
   }
 
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
+  let preallocatedBuffer: Uint8Array | null = total > 0 ? new Uint8Array(total) : null;
+  const fallbackChunks: Uint8Array[] = preallocatedBuffer ? [] : [];
   let loaded = 0;
 
   try {
@@ -31,7 +50,23 @@ export async function fetchWithDownloadProgress(
       const { done, value } = await reader.read();
       if (done) break;
 
-      chunks.push(value);
+      const nextLoaded = loaded + value.byteLength;
+
+      if (preallocatedBuffer) {
+        if (nextLoaded <= preallocatedBuffer.byteLength) {
+          preallocatedBuffer.set(value, loaded);
+        } else {
+          // Fall back if content-length was smaller than the actual body size.
+          if (loaded > 0) {
+            fallbackChunks.push(preallocatedBuffer.subarray(0, loaded));
+          }
+          fallbackChunks.push(value);
+          preallocatedBuffer = null;
+        }
+      } else {
+        fallbackChunks.push(value);
+      }
+
       loaded += value.byteLength;
 
       onProgress({
@@ -44,14 +79,11 @@ export async function fetchWithDownloadProgress(
     reader.releaseLock();
   }
 
-  const result = new Uint8Array(loaded);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.byteLength;
+  if (preallocatedBuffer) {
+    return toOwnedArrayBuffer(preallocatedBuffer, loaded);
   }
 
-  return result.buffer;
+  return toOwnedArrayBuffer(mergeChunks(fallbackChunks, loaded));
 }
 
 /**

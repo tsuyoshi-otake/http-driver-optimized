@@ -4,13 +4,40 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
 
 ## Current Focus
 - **COMPLETED**: Added repeatable benchmark harness for hot-path measurements
+- **COMPLETED**: Added repeatable memory benchmark harness for download buffering
+- **COMPLETED**: Added repeatable memory benchmark harness for multipart payload conversion
 - **COMPLETED**: Optimized runtime service lookup and request compilation
 - **COMPLETED**: Optimized shared cache/dedup request-key generation
 - **COMPLETED**: Optimized SSE and NDJSON parsers for long-line chunking
+- **COMPLETED**: Reduced known-length download buffering in `fetchWithDownloadProgress()`
+- **COMPLETED**: Removed eager payload cloning from `objectToFormData()`
 - Continue monitoring for any new issues and maintain high test coverage
-- All 412 tests now pass successfully with 100% coverage
+- All 416 tests now pass successfully with 100% coverage
 
 ## Recent Changes
+- **Multipart FormData Memory Optimization (COMPLETED)**:
+  - Added [`bench/memory-formdata.cjs`](../bench/memory-formdata.cjs)
+  - Added `npm run bench:memory:formdata` in [`package.json`](../package.json)
+  - [`objectToFormData()`](../src/utils/index.ts) now skips nullish object properties inline instead of cloning the full payload with `removeNullValues()` first
+  - The inline traversal preserves existing array-origin behavior for backward compatibility while removing the eager sanitized-payload copy
+  - Added coverage in [`test/utils/response.test.ts`](../test/utils/response.test.ts) for inherited enumerable keys and inline nullish removal behavior
+  - Measured results (`220` groups, `8` items per group):
+    - `legacy.objectToFormData`: `3.76ms` avg, `0.4 MiB` intermediate clone
+    - `optimized.objectToFormData`: `1.62ms` avg, `0 MiB` intermediate clone
+
+- **Download Progress Memory Optimization (COMPLETED)**:
+  - Added [`bench/memory-progress.cjs`](../bench/memory-progress.cjs)
+  - Added `npm run bench:memory` in [`package.json`](../package.json)
+  - [`fetchWithDownloadProgress()`](../src/utils/progress.ts) now preallocates a single `Uint8Array` when `Content-Length` is known
+  - If the header is smaller than the actual payload, the implementation falls back to chunk accumulation to preserve correctness
+  - If the header is larger than the actual payload, the result is trimmed to the bytes actually read
+  - Added coverage in [`test/utils/progress.test.ts`](../test/utils/progress.test.ts) for underreported and overreported `Content-Length`
+  - Measured results (`32 MiB` response, `64 KiB` chunks):
+    - `legacy.known-length`: `64 MiB` peak buffered, `27.18ms` avg
+    - `optimized.known-length`: `32 MiB` peak buffered, `20.57ms` avg
+    - `legacy.unknown-length`: `64 MiB` peak buffered, `19.96ms` avg
+    - `optimized.unknown-length`: `64 MiB` peak buffered, `22.47ms` avg
+
 - **Repository Relocation / Rename (COMPLETED)**:
   - GitHub repo was moved to `tsuyoshi-otake/http-driver-optimized`
   - Local `origin` now points to `https://github.com/tsuyoshi-otake/http-driver-optimized.git`
@@ -134,6 +161,8 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
 - **URL Safety**: Always use `joinUrl` from [`src/utils/index.ts`](../src/utils/index.ts) when concatenating URL parts to prevent double slashes.
 - Request identity should go through [`src/utils/request-key.ts`](../src/utils/request-key.ts) so cache/dedup behavior stays aligned.
 - Performance-sensitive changes should be checked with [`bench/optimizations.cjs`](../bench/optimizations.cjs) before and after the patch.
+- Memory-sensitive download changes should be checked with [`bench/memory-progress.cjs`](../bench/memory-progress.cjs), especially for known-size responses.
+- Memory-sensitive multipart changes should be checked with [`bench/memory-formdata.cjs`](../bench/memory-formdata.cjs) before and after the patch.
 
 ## Decisions and Open Issues
 
@@ -165,19 +194,13 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
 - Decision
   - Keep strict behavior for now but document this and potentially gate with a config flag later (e.g., `strictJsonFetch?: boolean`). Consumers can also override via [`withAddTransformResponseFetch()`](../src/index.ts:365).
 
-4) objectToFormData array handling bug
-- Observed
-  - In [`objectToFormData()`](../src/utils/index.ts:325) array branch uses `typeof value === "object"` and `String(value)` instead of `subValue`. This is a logic bug when arrays contain non-files or nested values.
-- Decision
-  - Fix to use `subValue` checks and `String(subValue)`; add tests for nested arrays/objects and File entries.
-
-5) getInfoURL method check literal
+4) getInfoURL method check literal
 - Observed
   - [`getInfoURL()`](../src/index.ts:274) checks `apiInfo.methods === "get"`.
 - Decision
   - Replace with `apiInfo.methods === MethodAPI.get` for correctness and refactor-safety. Reference: [`enum MethodAPI`](../src/utils/driver-contracts.ts:3).
 
-6) Error normalization flow
+5) Error normalization flow
 - Observed
   - Errors route through [`handleErrorResponse()`](../src/utils/error-handler.ts:41) returning a ResponseFormat-like object, then wrapped again by [`responseFormat()`](../src/utils/index.ts:112).
 - Decision
@@ -192,9 +215,6 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
 - Axios adapter
   - Implement an adapter mapping apisauce `ApiResponse` to [`ResponseFormat`](../src/utils/driver-contracts.ts:95) in [`execService()`](../src/index.ts:109).
   - Preserve `duration`, `status`, `data`, and map axios headers appropriately (or omit headers for axios path if incompatible).
-- FormData bugfix
-  - Correct array handling in [`objectToFormData()`](../src/utils/index.ts:325): use `subValue` for typeof checks and append, not `value`.
-  - Expand tests to cover nested arrays/objects and File payloads.
 - Minor corrections
   - Use `MethodAPI.get` in [`getInfoURL()`](../src/index.ts:274).
 - Optional enhancement
@@ -234,7 +254,11 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
   - Reworked runtime service resolution to use an internal service map and single-pass request compilation.
   - Added shared request-key helpers and reused request identities across cache/dedup paths.
   - Reworked NDJSON/SSE parsers to incrementally scan for newlines instead of splitting the whole buffer each chunk.
-  - Verified the repo at 412/412 tests passing with 100% coverage.
+  - Added `bench/memory-progress.cjs` and `npm run bench:memory`.
+  - Reworked `fetchWithDownloadProgress()` to preallocate known-size download buffers and fall back safely when `Content-Length` is inaccurate.
+  - Added `bench/memory-formdata.cjs` and `npm run bench:memory:formdata`.
+  - Reworked `objectToFormData()` to skip nullish object properties inline instead of cloning the sanitized payload first.
+  - Verified the repo at 416/416 tests passing with 100% coverage.
 
 ## Reference Index
 - Builder and driver surface:

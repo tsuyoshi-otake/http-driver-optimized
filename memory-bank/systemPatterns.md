@@ -89,12 +89,32 @@ Pattern: The fetch flow mirrors axios semantics, adds explicit `performance.now(
 
 Pattern: Query vs body composition is derived from HTTP method; content-type drives body compilation.
 
-### 5.1) Shared request identity
+### 5.1) Multipart FormData traversal
+- Multipart builder: [`objectToFormData()`](../src/utils/index.ts:325)
+- The FormData path now skips nullish object properties inline instead of cloning the entire payload up front.
+- Inline traversal preserves legacy array-origin behavior:
+  - object properties reached through plain-object recursion skip `null` / `undefined`
+  - array elements still stringify primitive `null` / `undefined`
+  - objects reached from array elements keep the pre-existing behavior for backward compatibility
+
+Pattern: For multipart payloads, prefer single-pass traversal over a pre-sanitizing deep clone when the output is already a brand-new `FormData` structure.
+
+### 5.2) Shared request identity
 - Shared key helper: [`src/utils/request-key.ts`](../src/utils/request-key.ts)
 - Cache and dedup now use the same request identity, reducing redundant serialization work.
 - For GET requests, the compiled URL already contains the query string, so runtime request identity can ignore the original payload object.
 
 Pattern: Build request identity once per call and reuse it across cache/dedup checks.
+
+### 5.3) Download buffering strategy
+- Download progress helper: [`src/utils/progress.ts`](../src/utils/progress.ts)
+- `fetchWithDownloadProgress()` now uses two buffering modes:
+  - Known-size responses (`Content-Length > 0`): preallocate a single `Uint8Array` and write chunks directly into it
+  - Unknown-size responses or bad `Content-Length`: accumulate chunks and merge at the end
+- If a response reports a smaller `Content-Length` than the bytes actually received, the implementation falls back from the preallocated path to chunk accumulation mid-stream.
+- If a response reports a larger `Content-Length` than the bytes actually received, the final result is trimmed to the bytes actually read.
+
+Pattern: For large downloads with a trustworthy `Content-Length`, prefer single-buffer writes to avoid holding both `chunks[]` and the final contiguous result in memory at the same time.
 
 ### 6) Error handling and normalization
 - Axios path:
@@ -202,6 +222,8 @@ Pattern: Keep driver-independent helpers public to enable testing and advanced u
 - Unit tests target utilities and fetch helper:
   - Examples: [`test/src/utils/httpClientFetch.test.ts`](../test/src/utils/httpClientFetch.test.ts)
 - Microbenchmarks for hot paths live in [`bench/optimizations.cjs`](../bench/optimizations.cjs)
+- Memory benchmarks for download buffering live in [`bench/memory-progress.cjs`](../bench/memory-progress.cjs)
+- Memory benchmarks for multipart payload traversal live in [`bench/memory-formdata.cjs`](../bench/memory-formdata.cjs)
 - Performance-sensitive changes should be validated with before/after benchmark runs in addition to the full Jest suite
 - Recommended additions:
   - Contract tests that assert async transform hooks are invoked

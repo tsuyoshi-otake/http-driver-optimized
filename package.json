@@ -38,7 +38,9 @@
     "start": "node dist/index.js",
     "test": "jest --coverage",
     "start:example": "ts-node example/index.ts",
-    "bench:optimizations": "node -r ts-node/register bench/optimizations.cjs"
+    "bench:optimizations": "node -r ts-node/register bench/optimizations.cjs",
+    "bench:memory": "node --expose-gc -r ts-node/register bench/memory-progress.cjs",
+    "bench:memory:formdata": "node --expose-gc bench/memory-formdata.cjs"
   },
   "dependencies": {
     "axios": "^1.13.2",
