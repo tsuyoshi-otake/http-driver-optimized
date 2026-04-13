@@ -39,7 +39,9 @@ graph TD;
   - Compile final endpoint: [`compileService()`](../src/utils/index.ts:57)
   - Assemble absolute URL and request data: [`compileUrlByService()`](../src/utils/index.ts:84), [`compileUrl()`](../src/utils/index.ts:146)
 
-Pattern: All endpoint resolution flows through compileUrlByService() to guarantee consistent path parametering and query assembly.
+Pattern:
+- Public helper flows still go through [`compileUrlByService()`](../src/utils/index.ts:84).
+- Runtime driver execution now uses an internal map-backed resolver in [`src/index.ts`](../src/index.ts), so service lookup is `O(1)` per call instead of repeated linear scans.
 
 ### 2) Builder pattern for driver construction
 - Builder: [`class DriverBuilder`](../src/index.ts:305)
@@ -67,11 +69,11 @@ Pattern: All call sites can branch on `res.ok` and inspect `status`, `data`, `he
 
 ### 4) Axios vs Fetch parity
 - Axios path
-  - Resolution: [`compileUrlByService()`](../src/utils/index.ts:84)
+  - Resolution: internal map-backed resolver in [`src/index.ts`](../src/index.ts), then [`compileUrl()`](../src/utils/index.ts:146)
   - Execution via apisauce/axios inside [`execService()`](../src/index.ts:109)
   - Transforms/interceptors (see Extensibility Points)
 - Fetch path
-  - Resolution: [`compileUrlByService()`](../src/utils/index.ts:84)
+  - Resolution: internal map-backed resolver in [`src/index.ts`](../src/index.ts), then [`compileUrl()`](../src/utils/index.ts:146)
   - Payload shaping for body: [`compileBodyFetchWithContextType()`](../src/utils/index.ts:182)
   - Execution and timing: [`execServiceByFetch()`](../src/index.ts:164)
   - Multipart behavior: drops explicit `Content-Type` so browser sets boundary
@@ -86,6 +88,13 @@ Pattern: The fetch flow mirrors axios semantics, adds explicit `performance.now(
   - Null-stripping for nested structures: [`removeNullValues()`](../src/utils/index.ts:298)
 
 Pattern: Query vs body composition is derived from HTTP method; content-type drives body compilation.
+
+### 5.1) Shared request identity
+- Shared key helper: [`src/utils/request-key.ts`](../src/utils/request-key.ts)
+- Cache and dedup now use the same request identity, reducing redundant serialization work.
+- For GET requests, the compiled URL already contains the query string, so runtime request identity can ignore the original payload object.
+
+Pattern: Build request identity once per call and reuse it across cache/dedup checks.
 
 ### 6) Error handling and normalization
 - Axios path:
@@ -162,6 +171,15 @@ Sequence — Fetch path:
 Helper flow — Standalone Fetch:
 - For non-driver usage, see [`httpClientFetch()`](../src/utils/index.ts:204)
 
+Sequence — Streaming parser flow:
+1) Read a chunk from `ReadableStream`
+2) Append decoded text to `buffer`
+3) Scan for newline positions with `indexOf("\n", start)`
+4) Process only complete lines
+5) Keep the trailing partial line in `buffer`
+
+Pattern: Streaming parsers should avoid `buffer.split("\n")` on every chunk because long partial lines cause repeated whole-buffer work.
+
 ## Data and Types
 
 - Service selection and compiled info:
@@ -183,6 +201,8 @@ Pattern: Keep driver-independent helpers public to enable testing and advanced u
 
 - Unit tests target utilities and fetch helper:
   - Examples: [`test/src/utils/httpClientFetch.test.ts`](../test/src/utils/httpClientFetch.test.ts)
+- Microbenchmarks for hot paths live in [`bench/optimizations.cjs`](../bench/optimizations.cjs)
+- Performance-sensitive changes should be validated with before/after benchmark runs in addition to the full Jest suite
 - Recommended additions:
   - Contract tests that assert async transform hooks are invoked
   - Interceptor behavior with queued requests (token refresh)

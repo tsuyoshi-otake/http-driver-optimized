@@ -5,6 +5,8 @@ import type {
   AsyncRequestTransform,
   AsyncResponseTransform,
   CacheConfig,
+  CompileUrlResult,
+  CompiledServiceInfo,
   DriverConfig,
   HttpDriverInstance,
   MiddlewareContext,
@@ -26,15 +28,16 @@ import { RequestDedup } from "./utils/dedup";
 import { handleErrorResponse } from "./utils/error-handler";
 import { executeMiddleware } from "./utils/middleware";
 import { parseFetchResponse } from "./utils/response-parser";
+import { buildRequestKey } from "./utils/request-key";
 import { parseSSEStream } from "./utils/sse-parser";
 import { parseNDJSONStream } from "./utils/ndjson-parser";
 import { resolveRetryConfig, withRetry } from "./utils/retry";
 import {
   buildUrlWithVersion,
   compileBodyFetchWithContentType,
-  compileService,
-  compileUrlByService,
+  compileUrl,
   joinUrl,
+  replaceParamsInUrl,
   responseFormat,
 } from "./utils/index";
 
@@ -69,11 +72,13 @@ class Driver {
   private axiosInstance: AxiosInstance;
   private cache: ResponseCache;
   private dedup: RequestDedup;
+  private serviceIndex: Map<string, ServiceApi>;
 
   constructor(config: DriverConfig) {
     this.config = config;
     this.cache = new ResponseCache(config.cache);
     this.dedup = new RequestDedup();
+    this.serviceIndex = new Map(config.services.map((service) => [service.id, service]));
 
     this.axiosInstance = axios.create({
       withCredentials: config.withCredentials ?? true,
@@ -172,6 +177,53 @@ class Driver {
     return options;
   }
 
+  private resolveCompiledService(idService: ServiceUrlCompile): CompiledServiceInfo | null {
+    const service = this.serviceIndex.get(String(idService.id));
+    if (!service) return null;
+
+    return {
+      url: replaceParamsInUrl(service.url, (idService.params ?? {}) as Record<string, string>),
+      method: service.method,
+      version: service.version,
+      options: service.options ?? {},
+      timeout: service.timeout,
+      retry: service.retry,
+    };
+  }
+
+  private buildServiceUrl(serviceInfo: CompiledServiceInfo): string {
+    if (this.config.versionConfig?.enabled) {
+      const versionConfig = this.config.versionConfig;
+      const version = serviceInfo.version || versionConfig.defaultVersion;
+      return buildUrlWithVersion(this.config.baseURL, serviceInfo.url, version, versionConfig);
+    }
+
+    return joinUrl(this.config.baseURL, serviceInfo.url);
+  }
+
+  private resolveServiceCall(
+    idService: ServiceUrlCompile,
+    payload?: Record<string, unknown>,
+    options?: Record<string, unknown>
+  ): { serviceInfo: CompiledServiceInfo; requestInfo: CompileUrlResult } | null {
+    const serviceInfo = this.resolveCompiledService(idService);
+    if (!serviceInfo) return null;
+
+    return {
+      serviceInfo,
+      requestInfo: compileUrl(this.buildServiceUrl(serviceInfo), serviceInfo.method, payload ?? {}, options),
+    };
+  }
+
+  private buildSharedRequestKey(
+    method: string,
+    url: string,
+    payload?: Record<string, unknown>
+  ): string {
+    const payloadForKey = method === MethodAPI.get ? undefined : payload;
+    return buildRequestKey(method, url, payloadForKey);
+  }
+
   appendExecService(): HttpDriverInstance & AxiosInstance {
     const httpDriver = Object.assign(this.axiosInstance, {
       execService: async <T = unknown>(
@@ -179,16 +231,12 @@ class Driver {
         payload?: Record<string, unknown>,
         options?: Record<string, unknown>
       ): Promise<ResponseFormat<T>> => {
-        const apiInfo = compileUrlByService(this.config, idService, payload, options);
-        if (apiInfo == null) {
+        const resolvedCall = this.resolveServiceCall(idService, payload, options);
+        if (resolvedCall == null) {
           return responseFormat(handleErrorResponse(new Error(`Service ${idService.id} in driver not found`))) as ResponseFormat<T>;
         }
 
-        const serviceInfo = compileService(idService, this.config.services);
-        /* istanbul ignore next */
-        if (!serviceInfo) {
-          return responseFormat(handleErrorResponse(new Error(`Service ${idService.id} in driver not found`))) as ResponseFormat<T>;
-        }
+        const { requestInfo: apiInfo, serviceInfo } = resolvedCall;
         const retryConfig = resolveRetryConfig(this.config.retry, serviceInfo.retry);
 
         // Middleware context
@@ -197,23 +245,24 @@ class Driver {
           payload, options,
         };
 
+        const shouldCache = this.cache.shouldCache(apiInfo.method);
+        const isBodyless = BODYLESS_METHODS.has(apiInfo.method);
+        const sharedRequestKey = (shouldCache || isBodyless)
+          ? this.buildSharedRequestKey(apiInfo.method, apiInfo.url, payload)
+          : "";
+
         // Cache check
-        const cacheKey = this.cache.buildKey(apiInfo.method, apiInfo.url, payload);
-        if (this.cache.shouldCache(apiInfo.method)) {
-          const cached = this.cache.get<T>(cacheKey);
+        if (shouldCache) {
+          const cached = this.cache.get<T>(sharedRequestKey);
           if (cached) return cached;
         }
-
-        // Dedup for bodyless methods (GET, HEAD, DELETE)
-        const isBodyless = BODYLESS_METHODS.has(apiInfo.method);
-        const dedupKey = isBodyless ? this.dedup.buildKey(apiInfo.method, apiInfo.url, payload) : "";
 
         const execute = async (): Promise<ResponseFormat<T>> => {
           return withRetry(retryConfig, async () => {
             let result: ResponseFormat<T> | undefined;
 
             const core = async () => {
-              result = await this.executeAxiosCall<T>(apiInfo, idService);
+              result = await this.executeAxiosCall<T>(apiInfo, serviceInfo);
             };
 
             if (this.config.middleware?.length) {
@@ -229,14 +278,14 @@ class Driver {
 
         try {
           this.emitRequest(String(idService.id), apiInfo.url, apiInfo.method);
-          const result = isBodyless && dedupKey
-            ? await this.dedup.execute<T>(dedupKey, execute)
+          const result = isBodyless && sharedRequestKey
+            ? await this.dedup.execute<T>(sharedRequestKey, execute)
             : await execute();
 
           this.emitResponse(String(idService.id), apiInfo.url, apiInfo.method, result.status, result.duration, result.ok);
 
-          if (result.ok && this.cache.shouldCache(apiInfo.method)) {
-            this.cache.set(cacheKey, result as ResponseFormat);
+          if (result.ok && shouldCache) {
+            this.cache.set(sharedRequestKey, result as ResponseFormat);
           }
           return result;
         } catch (error) {
@@ -249,16 +298,12 @@ class Driver {
         payload?: Record<string, unknown> | null,
         options?: Record<string, unknown>
       ): Promise<ResponseFormat<T>> => {
-        const apiInfo = compileUrlByService(this.config, idService, payload ?? undefined, options);
-        if (apiInfo == null) {
+        const resolvedCall = this.resolveServiceCall(idService, payload ?? undefined, options);
+        if (resolvedCall == null) {
           return responseFormat(handleErrorResponse(new Error(`Service ${idService.id} in driver not found`))) as ResponseFormat<T>;
         }
 
-        const serviceInfo = compileService(idService, this.config.services);
-        /* istanbul ignore next */
-        if (!serviceInfo) {
-          return responseFormat(handleErrorResponse(new Error(`Service ${idService.id} in driver not found`))) as ResponseFormat<T>;
-        }
+        const { requestInfo: apiInfo, serviceInfo } = resolvedCall;
         const retryConfig = resolveRetryConfig(this.config.retry, serviceInfo.retry);
 
         const ctx: MiddlewareContext = {
@@ -266,20 +311,22 @@ class Driver {
           payload: payload ?? undefined, options,
         };
 
-        const cacheKey = this.cache.buildKey(apiInfo.method, apiInfo.url, payload ?? undefined);
-        if (this.cache.shouldCache(apiInfo.method)) {
-          const cached = this.cache.get<T>(cacheKey);
+        const shouldCache = this.cache.shouldCache(apiInfo.method);
+        const isBodyless = BODYLESS_METHODS.has(apiInfo.method);
+        const sharedRequestKey = (shouldCache || isBodyless)
+          ? this.buildSharedRequestKey(apiInfo.method, apiInfo.url, payload ?? undefined)
+          : "";
+
+        if (shouldCache) {
+          const cached = this.cache.get<T>(sharedRequestKey);
           if (cached) return cached;
         }
-
-        const isBodyless = BODYLESS_METHODS.has(apiInfo.method);
-        const dedupKey = isBodyless ? this.dedup.buildKey(apiInfo.method, apiInfo.url, payload ?? undefined) : "";
 
         const execute = async (): Promise<ResponseFormat<T>> => {
           return withRetry(retryConfig, async () => {
             let result: ResponseFormat<T> | undefined;
             const core = async () => {
-              result = await this.executeFetchCall<T>(apiInfo, idService, options);
+              result = await this.executeFetchCall<T>(apiInfo, serviceInfo, options);
             };
             if (this.config.middleware?.length) {
               await executeMiddleware(this.config.middleware, ctx, core);
@@ -293,14 +340,14 @@ class Driver {
 
         try {
           this.emitRequest(String(idService.id), apiInfo.url, apiInfo.method);
-          const result = isBodyless && dedupKey
-            ? await this.dedup.execute<T>(dedupKey, execute)
+          const result = isBodyless && sharedRequestKey
+            ? await this.dedup.execute<T>(sharedRequestKey, execute)
             : await execute();
 
           this.emitResponse(String(idService.id), apiInfo.url, apiInfo.method, result.status, result.duration, result.ok);
 
-          if (result.ok && this.cache.shouldCache(apiInfo.method)) {
-            this.cache.set(cacheKey, result as ResponseFormat);
+          if (result.ok && shouldCache) {
+            this.cache.set(sharedRequestKey, result as ResponseFormat);
           }
           return result;
         } catch (error) {
@@ -313,17 +360,18 @@ class Driver {
         payload?: Record<string, unknown> | null,
         options?: Record<string, unknown>
       ): Promise<StreamResponseFormat> => {
-        const apiInfo = compileUrlByService(this.config, idService, payload ?? undefined, options);
-        if (apiInfo == null) {
+        const resolvedCall = this.resolveServiceCall(idService, payload ?? undefined, options);
+        if (resolvedCall == null) {
           const emptyStream = (async function* () {})();
           return { ok: false, status: 500, headers: null, problem: `Service ${idService.id} in driver not found`, stream: emptyStream, abort: () => {} };
         }
 
+        const { requestInfo: apiInfo, serviceInfo } = resolvedCall;
+
         let url: string = apiInfo.url;
         let requestOptions: Record<string, any> = { ...apiInfo.options };
 
-        const serviceInfo = compileService(idService, this.config.services);
-        requestOptions = this.applyTimeout(requestOptions, serviceInfo!.timeout);
+        requestOptions = this.applyTimeout(requestOptions, serviceInfo.timeout);
         applyAbortControllerSignal(requestOptions);
 
         // SSE typically uses Accept: text/event-stream
@@ -398,17 +446,18 @@ class Driver {
         payload?: Record<string, unknown> | null,
         options?: Record<string, unknown>
       ): Promise<NDJSONStreamResponseFormat<T>> => {
-        const apiInfo = compileUrlByService(this.config, idService, payload ?? undefined, options);
-        if (apiInfo == null) {
+        const resolvedCall = this.resolveServiceCall(idService, payload ?? undefined, options);
+        if (resolvedCall == null) {
           const emptyStream = (async function* () {})() as AsyncGenerator<T, void, undefined>;
           return { ok: false, status: 500, headers: null, problem: `Service ${idService.id} in driver not found`, stream: emptyStream, abort: () => {} };
         }
 
+        const { requestInfo: apiInfo, serviceInfo } = resolvedCall;
+
         let url: string = apiInfo.url;
         let requestOptions: Record<string, any> = { ...apiInfo.options };
 
-        const serviceInfo = compileService(idService, this.config.services);
-        requestOptions = this.applyTimeout(requestOptions, serviceInfo!.timeout);
+        requestOptions = this.applyTimeout(requestOptions, serviceInfo.timeout);
         applyAbortControllerSignal(requestOptions);
         if (!requestOptions.headers?.hasOwnProperty("Accept")) {
           requestOptions.headers = { ...requestOptions.headers, "Accept": "application/x-ndjson" };
@@ -459,22 +508,15 @@ class Driver {
       },
 
       getInfoURL: (idService: ServiceUrlCompile, payload: Record<string, unknown> = {}) => {
-        const apiInfo = compileService(idService, this.config.services);
-        if (apiInfo != null) {
-          let fullUrl: string;
-          if (this.config.versionConfig?.enabled) {
-            const vCfg = this.config.versionConfig;
-            const version = apiInfo.version || vCfg.defaultVersion;
-            fullUrl = buildUrlWithVersion(this.config.baseURL, apiInfo.url, version, vCfg);
-          } else {
-            fullUrl = joinUrl(this.config.baseURL, apiInfo.url);
-          }
-          if (payload && Object.keys(payload).length > 0 && apiInfo.method === MethodAPI.get) {
+        const serviceInfo = this.resolveCompiledService(idService);
+        if (serviceInfo != null) {
+          const fullUrl = this.buildServiceUrl(serviceInfo);
+          if (payload && Object.keys(payload).length > 0 && serviceInfo.method === MethodAPI.get) {
             const queryString = qs.stringify(payload);
             const separator = fullUrl.includes('?') ? '&' : '?';
-            return { fullUrl: fullUrl + separator + queryString, pathname: apiInfo.url + "?" + queryString, method: apiInfo.method, payload: null };
+            return { fullUrl: fullUrl + separator + queryString, pathname: serviceInfo.url + "?" + queryString, method: serviceInfo.method, payload: null };
           }
-          return { fullUrl, pathname: apiInfo.url, method: apiInfo.method, payload };
+          return { fullUrl, pathname: serviceInfo.url, method: serviceInfo.method, payload };
         }
         return { fullUrl: null, pathname: null, method: null, payload: null };
       },
@@ -482,7 +524,10 @@ class Driver {
     return httpDriver;
   }
 
-  private async executeAxiosCall<T>(apiInfo: any, idService: ServiceUrlCompile): Promise<ResponseFormat<T>> {
+  private async executeAxiosCall<T>(
+    apiInfo: CompileUrlResult,
+    serviceInfo: CompiledServiceInfo
+  ): Promise<ResponseFormat<T>> {
     try {
       const payloadConvert = apiInfo.payload;
       const optHeaders = apiInfo.options.headers as Record<string, unknown> | undefined;
@@ -493,8 +538,7 @@ class Driver {
         }
       }
 
-      const axiosServiceInfo = compileService(idService, this.config.services);
-      let opts = this.applyTimeout(apiInfo.options as Record<string, any>, axiosServiceInfo!.timeout);
+      let opts = this.applyTimeout(apiInfo.options as Record<string, any>, serviceInfo.timeout);
       applyAbortControllerSignal(opts);
 
       const start = performance.now();
@@ -545,13 +589,16 @@ class Driver {
     }
   }
 
-  private async executeFetchCall<T>(apiInfo: any, idService: ServiceUrlCompile, options?: Record<string, unknown>): Promise<ResponseFormat<T>> {
+  private async executeFetchCall<T>(
+    apiInfo: CompileUrlResult,
+    serviceInfo: CompiledServiceInfo,
+    options?: Record<string, unknown>
+  ): Promise<ResponseFormat<T>> {
     try {
       let url: string = apiInfo.url;
       let requestOptions: Record<string, any> = { ...apiInfo.options };
 
-      const fetchServiceInfo = compileService(idService, this.config.services);
-      requestOptions = this.applyTimeout(requestOptions, fetchServiceInfo!.timeout);
+      requestOptions = this.applyTimeout(requestOptions, serviceInfo.timeout);
       applyAbortControllerSignal(requestOptions);
       if (!requestOptions.headers?.hasOwnProperty("Content-Type")) {
         requestOptions.headers = { ...requestOptions.headers, "Content-Type": "application/json" };

@@ -29,6 +29,7 @@ This document captures technologies, dependencies, scripts, environment assumpti
   - Body encoder: [`compileBodyFetchWithContextType()`](../src/utils/index.ts:182)
   - Null stripping: [`removeNullValues()`](../src/utils/index.ts:298)
   - FormData compiler: [`objectToFormData()`](../src/utils/index.ts:325)
+  - Shared request identity: [`src/utils/request-key.ts`](../src/utils/request-key.ts)
 
 ## Error Handling
 - Custom error types and normalization helpers:
@@ -58,11 +59,13 @@ This document captures technologies, dependencies, scripts, environment assumpti
   - Build: `npm run build` (typescript `tsc`)
   - Start (library demo): `npm start` (runs `dist/index.js`)
   - Tests: `npm test` (Jest with coverage)
+  - Benchmarks: `npm run bench:optimizations`
   - Example: `npm run start:example` (ts-node runs [`example/index.ts`](../example/index.ts))
 - Testing:
   - Jest config: [`jest.config.ts`](../jest.config.ts)
   - Example tests: [`test/src/utils/httpClientFetch.test.ts`](../test/src/utils/httpClientFetch.test.ts), [`test/src/index.test.ts`](../test/src/index.test.ts)
   - Coverage badge target: 90%+ in [`README.MD`](../README.MD)
+  - Benchmark harness: [`bench/optimizations.cjs`](../bench/optimizations.cjs)
 
 ## Build and Distribution
 - Compiler: TypeScript (`tsc`) — see [`tsconfig.json`](../tsconfig.json)
@@ -93,6 +96,7 @@ This document captures technologies, dependencies, scripts, environment assumpti
 - Install: `npm ci` or `npm install`
 - Build: `npm run build`
 - Test with coverage: `npm test`
+- Run performance microbenchmarks: `npm run bench:optimizations`
 - Run examples: `npm run start:example`
 
 ## Documentation

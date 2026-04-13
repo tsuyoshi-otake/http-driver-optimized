@@ -1,9 +1,14 @@
 # Progress — HttpDriver
 
-Updated: 2025-08-27
+Updated: 2026-04-13
 
 ## Current Status Summary
-- **ALL TESTS PASSING**: 185 tests pass with 97.76% statement coverage
+- **ALL TESTS PASSING**: 412 tests pass with 100% coverage
+- **BENCHMARK HARNESS ADDED**: `npm run bench:optimizations` measures driver and stream hot paths
+- **PERFORMANCE IMPROVEMENTS SHIPPED**:
+  - Runtime service lookup uses a map-backed resolver
+  - Cache/dedup paths reuse a shared request key
+  - NDJSON/SSE parsers use incremental newline scanning
 - Memory Bank initialized: project brief, product, system patterns, tech context, and active context are in place.
 - Docs: [`projectbrief.md`](./projectbrief.md), [`productContext.md`](./productContext.md), [`systemPatterns.md`](./systemPatterns.md), [`techContext.md`](./techContext.md), [`activeContext.md`](./activeContext.md)
 - Core code reviewed: [`src/index.ts`](../src/index.ts), [`src/utils/index.ts`](../src/utils/index.ts), [`src/utils/driver-contracts.ts`](../src/utils/driver-contracts.ts), [`src/utils/error-handler.ts`](../src/utils/error-handler.ts), [`src/utils/custom-errors.ts`](../src/utils/custom-errors.ts)
@@ -11,6 +16,9 @@ Updated: 2025-08-27
 
 ## What Works
 - Driver construction via [`class DriverBuilder`](../src/index.ts:305) producing a client with: [`execService()`](../src/index.ts:109), [`execServiceByFetch()`](../src/index.ts:164), [`getInfoURL()`](../src/index.ts:274).
+- Runtime service resolution no longer recompiles the same service multiple times per request.
+- Cache and dedup now share the same request identity helper via [`src/utils/request-key.ts`](../src/utils/request-key.ts).
+- Long-line streaming parsers avoid `split("\n")` on every chunk in [`src/utils/ndjson-parser.ts`](../src/utils/ndjson-parser.ts) and [`src/utils/sse-parser.ts`](../src/utils/sse-parser.ts).
 - **Enhanced `execServiceByFetch()`** with comprehensive response type support:
   - Explicit responseType options: `'blob'`, `'arraybuffer'`, `'text'`
   - Auto-detection based on Content-Type headers
@@ -22,6 +30,7 @@ Updated: 2025-08-27
 - Standalone helper for non-driver fetch: [`httpClientFetch()`](../src/utils/index.ts:204).
 - Examples available under [`example/`](../example) with drivers in [`example/src/api-clients/`](../example/src/api-clients).
 - **Comprehensive version configuration system** with multiple positioning strategies and custom templates
+- Repeatable microbenchmarks live in [`bench/optimizations.cjs`](../bench/optimizations.cjs)
 
 ## What's Left To Build / Improve (Future Considerations)
 1) Optional: Align async Axios transform hooks
@@ -40,24 +49,48 @@ Updated: 2025-08-27
 5) Optional: make Fetch JSON strictness configurable
 - Consider flag strictJsonFetch in [`interface DriverConfig`](../src/utils/driver-contracts.ts:34) to permit text responses; or recommend [`withAddTransformResponseFetch()`](../src/index.ts:365) to relax parsing.
 
+6) Optional: reduce cache cleanup background work
+- [`ResponseCache`](../src/utils/cache.ts) still performs TTL-driven full-map cleanup scans.
+
+7) Optional: reduce memory use for large download progress tracking
+- [`fetchWithDownloadProgress()`](../src/utils/progress.ts) still buffers chunks before a final contiguous copy.
+
 ## Current Issues
 - **RESOLVED**: All major test failures have been fixed
 - **RESOLVED**: Empty test file issue fixed
 - **RESOLVED**: Blob/ArrayBuffer/Text response handling in fetch
+- **RESOLVED**: Repeated service lookup/compilation in runtime paths
+- **RESOLVED**: Duplicate request-key serialization across cache/dedup checks
+- **RESOLVED**: Per-chunk full-buffer splitting in SSE/NDJSON parsers
 
 ## Recent Decisions
 - Prioritize explicit responseType over content-type auto-detection in fetch responses
 - Maintain full backward compatibility for JSON responses
 - Keep strict JSON in Fetch for now; document override via [`withAddTransformResponseFetch()`](../src/index.ts:365).
 - Plan explicit Axios->ResponseFormat adapter.
+- Benchmark hot-path changes before and after each optimization.
+- Keep public helper behavior stable while optimizing runtime-only code paths behind the `Driver` class.
 
 ## Next Actions
 - **COMPLETED**: All test failures have been resolved
 - **COMPLETED**: Enhanced fetch response type handling
+- **COMPLETED**: Added benchmark harness and landed first round of performance optimizations
 - Monitor for any new issues or feature requests
 - Consider implementing optional improvements listed above if needed
 - Code: Update [`getInfoURL()`](../src/index.ts:274) to use [`MethodAPI.get`](../src/utils/driver-contracts.ts:3).
 - Tests: Add coverage for async hooks, adapter mapping, and FormData edge cases in [`test/src/index.test.ts`](../test/src/index.test.ts), [`test/src/utils/index.test.ts`](../test/src/utils/index.test.ts), [`test/src/utils/httpClientFetch.test.ts`](../test/src/utils/httpClientFetch.test.ts).
+
+## Benchmark Snapshot
+- Baseline:
+  - `driver.getInfoURL`: 414.75us avg
+  - `driver.execService`: 540.78us avg
+  - `driver.execServiceByFetch`: 589.41us avg
+- After current optimizations:
+  - `driver.getInfoURL`: 397.02us avg
+  - `driver.execService`: 398.70us avg
+  - `driver.execServiceByFetch`: 407.97us avg
+  - `parseNDJSONStream.long-line`: 171.43us avg (from 189.10us)
+  - `parseSSEStream.long-line`: 158.72us avg (from 190.84us)
 
 ## Test & Coverage Snapshot
 - Existing tests: [`test/src/index.test.ts`](../test/src/index.test.ts), [`test/src/utils/index.test.ts`](../test/src/utils/index.test.ts), [`test/src/utils/httpClientFetch.test.ts`](../test/src/utils/httpClientFetch.test.ts), [`test/src/utils/additional.test.ts`](../test/src/utils/additional.test.ts), [`test/src/utils/extra.test.ts`](../test/src/utils/extra.test.ts).

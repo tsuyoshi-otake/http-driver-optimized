@@ -37,7 +37,8 @@
     "build": "rm -rf dist && tsc",
     "start": "node dist/index.js",
     "test": "jest --coverage",
-    "start:example": "ts-node example/index.ts"
+    "start:example": "ts-node example/index.ts",
+    "bench:optimizations": "node -r ts-node/register bench/optimizations.cjs"
   },
   "dependencies": {
     "axios": "^1.13.2",

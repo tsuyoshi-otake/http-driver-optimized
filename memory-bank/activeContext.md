@@ -3,14 +3,43 @@
 This file tracks the current focus, recent changes, decisions, next steps, and active considerations for the HttpDriver project.
 
 ## Current Focus
-- **COMPLETED**: Fixed double slash issue in URL compilation logic
-- **COMPLETED**: Fixed all test failures and achieved 97.58% statement coverage
-- **NEW ENHANCEMENTS**: Enhanced `execServiceByFetch` with comprehensive response type support
-- **LATEST**: Fixed ResponseFormat generic typing system to properly support TypeScript generics
+- **COMPLETED**: Added repeatable benchmark harness for hot-path measurements
+- **COMPLETED**: Optimized runtime service lookup and request compilation
+- **COMPLETED**: Optimized shared cache/dedup request-key generation
+- **COMPLETED**: Optimized SSE and NDJSON parsers for long-line chunking
 - Continue monitoring for any new issues and maintain high test coverage
-- All 191 tests now pass successfully
+- All 412 tests now pass successfully with 100% coverage
 
 ## Recent Changes
+- **Performance Optimization Cycle (COMPLETED)**:
+  - **Benchmark Harness**:
+    - Added [`bench/optimizations.cjs`](../bench/optimizations.cjs)
+    - Added `npm run bench:optimizations` in [`package.json`](../package.json)
+    - Benchmarks cover `driver.getInfoURL`, `driver.execService`, `driver.execServiceByFetch`, `parseNDJSONStream.long-line`, and `parseSSEStream.long-line`
+  - **Service Lookup Optimization**:
+    - Added internal `serviceIndex: Map<string, ServiceApi>` in [`src/index.ts`](../src/index.ts)
+    - Driver runtime now resolves services through a map-backed private resolver instead of repeated linear scans
+    - Axios/fetch/stream paths now compile service info and request info once per call
+  - **Shared Request Key Optimization**:
+    - Added [`src/utils/request-key.ts`](../src/utils/request-key.ts)
+    - [`src/utils/cache.ts`](../src/utils/cache.ts) and [`src/utils/dedup.ts`](../src/utils/dedup.ts) now share the same request-key builder
+    - Driver cache/dedup paths now reuse a single computed key per request
+    - GET request identity now relies on the compiled URL and skips redundant payload serialization
+  - **Streaming Parser Optimization**:
+    - [`src/utils/ndjson-parser.ts`](../src/utils/ndjson-parser.ts) now scans newline positions incrementally instead of splitting the full buffer every chunk
+    - [`src/utils/sse-parser.ts`](../src/utils/sse-parser.ts) now uses the same incremental scan approach
+  - **Measured Results**:
+    - Baseline:
+      - `driver.getInfoURL`: 414.75us avg
+      - `driver.execService`: 540.78us avg
+      - `driver.execServiceByFetch`: 589.41us avg
+    - After current optimizations:
+      - `driver.getInfoURL`: 397.02us avg
+      - `driver.execService`: 398.70us avg
+      - `driver.execServiceByFetch`: 407.97us avg
+      - `parseNDJSONStream.long-line`: 171.43us avg (from 189.10us)
+      - `parseSSEStream.long-line`: 158.72us avg (from 190.84us)
+
 - **Double Slash Prevention (COMPLETED)**:
   - **Problem**: URLs were being compiled with double slashes (e.g., `https://api.example.com//users`) when concatenating parts
   - **Solution**: 
@@ -91,11 +120,14 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
 ## Important Patterns and Preferences
 - Standard response shape for all calls via [`ResponseFormat`](../src/utils/driver-contracts.ts:95) and formatter [`responseFormat()`](../src/utils/index.ts:112).
 - Services are declarative with templated URLs; resolution goes through [`compileService()`](../src/utils/index.ts:57) and [`compileUrlByService()`](../src/utils/index.ts:84).
+- Runtime driver execution should use the internal service map in [`src/index.ts`](../src/index.ts) rather than repeated scans through the service array.
 - Dual execution paths:
   - Axios: [`execService()`](../src/index.ts:109)
   - Fetch: [`execServiceByFetch()`](../src/index.ts:164)
 - Body shaping guided by content type via [`compileBodyFetchWithContextType()`](../src/utils/index.ts:182).
 - **URL Safety**: Always use `joinUrl` from [`src/utils/index.ts`](../src/utils/index.ts) when concatenating URL parts to prevent double slashes.
+- Request identity should go through [`src/utils/request-key.ts`](../src/utils/request-key.ts) so cache/dedup behavior stays aligned.
+- Performance-sensitive changes should be checked with [`bench/optimizations.cjs`](../bench/optimizations.cjs) before and after the patch.
 
 ## Decisions and Open Issues
 
@@ -160,6 +192,8 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
 - Minor corrections
   - Use `MethodAPI.get` in [`getInfoURL()`](../src/index.ts:274).
 - Optional enhancement
+  - Consider lazy-expiration or an expiry queue for [`ResponseCache`](../src/utils/cache.ts) to avoid periodic full-map scans.
+  - Consider a streaming download API alongside [`fetchWithDownloadProgress()`](../src/utils/progress.ts) to avoid buffering large responses twice.
   - Consider `strictJsonFetch` flag in config for [`execServiceByFetch()`](../src/index.ts:164) to optionally allow text payloads without error (fall back to text when JSON.parse fails).
 
 ## Testing Additions
@@ -189,6 +223,12 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
   - Initialized Memory Bank and documented core/system/tech contexts.
   - Identified async transform naming mismatch and FormData array handling bug.
   - Planned adapter for axios responses to ensure strict [`ResponseFormat`](../src/utils/driver-contracts.ts:95) compliance.
+- 2026-04-13
+  - Added `bench/optimizations.cjs` and `npm run bench:optimizations`.
+  - Reworked runtime service resolution to use an internal service map and single-pass request compilation.
+  - Added shared request-key helpers and reused request identities across cache/dedup paths.
+  - Reworked NDJSON/SSE parsers to incrementally scan for newlines instead of splitting the whole buffer each chunk.
+  - Verified the repo at 412/412 tests passing with 100% coverage.
 
 ## Reference Index
 - Builder and driver surface:

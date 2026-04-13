@@ -1,4 +1,5 @@
 import type { ResponseFormat } from "../types/driver";
+import { buildRequestKey } from "./request-key";
 
 /**
  * Request deduplication - prevents duplicate concurrent requests.
@@ -8,9 +9,7 @@ export class RequestDedup {
   private pending = new Map<string, Promise<ResponseFormat>>();
 
   buildKey(method: string, url: string, payload?: Record<string, unknown>): string {
-    const payloadKey = payload && Object.keys(payload).length > 0
-      ? JSON.stringify(payload) : "";
-    return `${method}:${url}:${payloadKey}`;
+    return buildRequestKey(method, url, payload);
   }
 
   async execute<T>(

@@ -11,6 +11,17 @@ export async function* parseNDJSONStream<T = unknown>(
   const decoder = new TextDecoder();
   let buffer = "";
 
+  const parseLine = (line: string): T | undefined => {
+    const trimmed = line.trim();
+    if (!trimmed) return undefined;
+
+    try {
+      return JSON.parse(trimmed) as T;
+    } catch {
+      return undefined;
+    }
+  };
+
   try {
     while (true) {
       if (signal?.aborted) break;
@@ -19,26 +30,27 @@ export async function* parseNDJSONStream<T = unknown>(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop()!;
+      let lineStart = 0;
+      let lineEnd = buffer.indexOf("\n", lineStart);
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          yield JSON.parse(trimmed) as T;
-        } catch {
-          // Skip malformed lines
+      while (lineEnd !== -1) {
+        const parsedLine = parseLine(buffer.slice(lineStart, lineEnd));
+        if (parsedLine !== undefined) {
+          yield parsedLine;
         }
+
+        lineStart = lineEnd + 1;
+        lineEnd = buffer.indexOf("\n", lineStart);
       }
+
+      buffer = buffer.slice(lineStart);
     }
 
     // Flush remaining buffer
-    if (buffer.trim()) {
-      try {
-        yield JSON.parse(buffer.trim()) as T;
-      } catch {
-        // Skip malformed final line
+    if (buffer) {
+      const parsedLine = parseLine(buffer);
+      if (parsedLine !== undefined) {
+        yield parsedLine;
       }
     }
   } finally {

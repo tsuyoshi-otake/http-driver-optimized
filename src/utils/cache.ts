@@ -1,4 +1,5 @@
 import type { CacheConfig, ResponseFormat } from "../types/driver";
+import { buildRequestKey } from "./request-key";
 
 interface CacheEntry {
   data: ResponseFormat;
@@ -36,9 +37,7 @@ export class ResponseCache {
   }
 
   buildKey(method: string, url: string, payload?: Record<string, unknown>): string {
-    const payloadKey = payload && Object.keys(payload).length > 0
-      ? JSON.stringify(payload) : "";
-    return `${method}:${url}:${payloadKey}`;
+    return buildRequestKey(method, url, payload);
   }
 
   get<T>(key: string): ResponseFormat<T> | null {
