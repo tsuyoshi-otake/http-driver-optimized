@@ -24,6 +24,17 @@ function parseNDJSONStream(stream, signal) {
         const reader = stream.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        const parseLine = (line) => {
+            const trimmed = line.trim();
+            if (!trimmed)
+                return undefined;
+            try {
+                return JSON.parse(trimmed);
+            }
+            catch (_a) {
+                return undefined;
+            }
+        };
         try {
             while (true) {
                 if (signal === null || signal === void 0 ? void 0 : signal.aborted)
@@ -32,27 +43,23 @@ function parseNDJSONStream(stream, signal) {
                 if (done)
                     break;
                 buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split("\n");
-                buffer = lines.pop();
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (!trimmed)
-                        continue;
-                    try {
-                        yield yield __await(JSON.parse(trimmed));
+                let lineStart = 0;
+                let lineEnd = buffer.indexOf("\n", lineStart);
+                while (lineEnd !== -1) {
+                    const parsedLine = parseLine(buffer.slice(lineStart, lineEnd));
+                    if (parsedLine !== undefined) {
+                        yield yield __await(parsedLine);
                     }
-                    catch (_a) {
-                        // Skip malformed lines
-                    }
+                    lineStart = lineEnd + 1;
+                    lineEnd = buffer.indexOf("\n", lineStart);
                 }
+                buffer = buffer.slice(lineStart);
             }
             // Flush remaining buffer
-            if (buffer.trim()) {
-                try {
-                    yield yield __await(JSON.parse(buffer.trim()));
-                }
-                catch (_b) {
-                    // Skip malformed final line
+            if (buffer) {
+                const parsedLine = parseLine(buffer);
+                if (parsedLine !== undefined) {
+                    yield yield __await(parsedLine);
                 }
             }
         }
@@ -60,7 +67,7 @@ function parseNDJSONStream(stream, signal) {
             try {
                 reader.cancel();
             }
-            catch ( /* ignore */_c) { /* ignore */ }
+            catch ( /* ignore */_a) { /* ignore */ }
             reader.releaseLock();
         }
     });

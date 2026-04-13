@@ -31,6 +31,61 @@ function parseSSEStream(stream, signal) {
         let currentData = [];
         let currentId = "";
         let currentRetry;
+        const processLine = (line) => {
+            if (line === "" || line === "\r") {
+                if (currentData.length === 0) {
+                    currentEvent = "message";
+                    currentData = [];
+                    currentRetry = undefined;
+                    return null;
+                }
+                const event = {
+                    event: currentEvent,
+                    data: currentData.join("\n"),
+                    id: currentId,
+                    retry: currentRetry,
+                };
+                currentEvent = "message";
+                currentData = [];
+                currentRetry = undefined;
+                return event;
+            }
+            const stripped = line.endsWith("\r") ? line.slice(0, -1) : line;
+            if (stripped.startsWith(":")) {
+                return null;
+            }
+            const colonIdx = stripped.indexOf(":");
+            let field;
+            let val;
+            if (colonIdx === -1) {
+                field = stripped;
+                val = "";
+            }
+            else {
+                field = stripped.slice(0, colonIdx);
+                val = stripped.slice(colonIdx + 1);
+                if (val.startsWith(" "))
+                    val = val.slice(1);
+            }
+            switch (field) {
+                case "event":
+                    currentEvent = val;
+                    break;
+                case "data":
+                    currentData.push(val);
+                    break;
+                case "id":
+                    currentId = val;
+                    break;
+                case "retry": {
+                    const n = parseInt(val, 10);
+                    if (!isNaN(n))
+                        currentRetry = n;
+                    break;
+                }
+            }
+            return null;
+        };
         try {
             while (true) {
                 if (signal === null || signal === void 0 ? void 0 : signal.aborted)
@@ -39,93 +94,21 @@ function parseSSEStream(stream, signal) {
                 if (done)
                     break;
                 buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split("\n");
-                // Keep the last incomplete line in buffer
-                buffer = lines.pop();
-                for (const line of lines) {
-                    if (line === "" || line === "\r") {
-                        // Empty line = dispatch event
-                        if (currentData.length > 0) {
-                            yield yield __await({
-                                event: currentEvent,
-                                data: currentData.join("\n"),
-                                id: currentId,
-                                retry: currentRetry,
-                            });
-                        }
-                        // Reset for next event
-                        currentEvent = "message";
-                        currentData = [];
-                        currentRetry = undefined;
-                        continue;
+                let lineStart = 0;
+                let lineEnd = buffer.indexOf("\n", lineStart);
+                while (lineEnd !== -1) {
+                    const event = processLine(buffer.slice(lineStart, lineEnd));
+                    if (event) {
+                        yield yield __await(event);
                     }
-                    const stripped = line.endsWith("\r") ? line.slice(0, -1) : line;
-                    if (stripped.startsWith(":")) {
-                        // Comment line, ignore
-                        continue;
-                    }
-                    const colonIdx = stripped.indexOf(":");
-                    let field;
-                    let val;
-                    if (colonIdx === -1) {
-                        field = stripped;
-                        val = "";
-                    }
-                    else {
-                        field = stripped.slice(0, colonIdx);
-                        val = stripped.slice(colonIdx + 1);
-                        // Remove single leading space after colon if present
-                        if (val.startsWith(" "))
-                            val = val.slice(1);
-                    }
-                    switch (field) {
-                        case "event":
-                            currentEvent = val;
-                            break;
-                        case "data":
-                            currentData.push(val);
-                            break;
-                        case "id":
-                            currentId = val;
-                            break;
-                        case "retry": {
-                            const n = parseInt(val, 10);
-                            if (!isNaN(n))
-                                currentRetry = n;
-                            break;
-                        }
-                    }
+                    lineStart = lineEnd + 1;
+                    lineEnd = buffer.indexOf("\n", lineStart);
                 }
+                buffer = buffer.slice(lineStart);
             }
             // Process any remaining buffer content
             if (buffer) {
-                const stripped = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer;
-                if (!stripped.startsWith(":")) {
-                    const colonIdx = stripped.indexOf(":");
-                    let field;
-                    let val;
-                    if (colonIdx === -1) {
-                        field = stripped;
-                        val = "";
-                    }
-                    else {
-                        field = stripped.slice(0, colonIdx);
-                        val = stripped.slice(colonIdx + 1);
-                        if (val.startsWith(" "))
-                            val = val.slice(1);
-                    }
-                    if (field === "data")
-                        currentData.push(val);
-                    else if (field === "event")
-                        currentEvent = val;
-                    else if (field === "id")
-                        currentId = val;
-                    else if (field === "retry") {
-                        const n = parseInt(val, 10);
-                        if (!isNaN(n))
-                            currentRetry = n;
-                    }
-                }
+                processLine(buffer);
             }
             // Flush remaining data
             if (currentData.length > 0) {

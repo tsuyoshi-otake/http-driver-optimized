@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ResponseCache = void 0;
+const request_key_1 = require("./request-key");
 const DEFAULT_MAX_SIZE = 1000;
 class ResponseCache {
     constructor(config) {
@@ -26,9 +27,7 @@ class ResponseCache {
         return this.config.enabled;
     }
     buildKey(method, url, payload) {
-        const payloadKey = payload && Object.keys(payload).length > 0
-            ? JSON.stringify(payload) : "";
-        return `${method}:${url}:${payloadKey}`;
+        return (0, request_key_1.buildRequestKey)(method, url, payload);
     }
     get(key) {
         const entry = this.store.get(key);

@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RequestDedup = void 0;
+const request_key_1 = require("./request-key");
 /**
  * Request deduplication - prevents duplicate concurrent requests.
  * If a request with the same key is already in-flight, returns the same promise.
@@ -10,9 +11,7 @@ class RequestDedup {
         this.pending = new Map();
     }
     buildKey(method, url, payload) {
-        const payloadKey = payload && Object.keys(payload).length > 0
-            ? JSON.stringify(payload) : "";
-        return `${method}:${url}:${payloadKey}`;
+        return (0, request_key_1.buildRequestKey)(method, url, payload);
     }
     async execute(key, fn) {
         const existing = this.pending.get(key);

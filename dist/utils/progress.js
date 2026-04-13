@@ -2,6 +2,20 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.fetchWithDownloadProgress = fetchWithDownloadProgress;
 exports.createUploadProgressBody = createUploadProgressBody;
+function toOwnedArrayBuffer(buffer, usedBytes = buffer.byteLength) {
+    return (usedBytes === buffer.byteLength
+        ? buffer.buffer
+        : buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + usedBytes));
+}
+function mergeChunks(chunks, totalBytes) {
+    const result = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return result;
+}
 /**
  * Reads a fetch Response body with download progress tracking.
  * Returns the complete body as an ArrayBuffer.
@@ -14,14 +28,31 @@ async function fetchWithDownloadProgress(response, onProgress) {
         return new ArrayBuffer(0);
     }
     const reader = response.body.getReader();
-    const chunks = [];
+    let preallocatedBuffer = total > 0 ? new Uint8Array(total) : null;
+    const fallbackChunks = preallocatedBuffer ? [] : [];
     let loaded = 0;
     try {
         while (true) {
             const { done, value } = await reader.read();
             if (done)
                 break;
-            chunks.push(value);
+            const nextLoaded = loaded + value.byteLength;
+            if (preallocatedBuffer) {
+                if (nextLoaded <= preallocatedBuffer.byteLength) {
+                    preallocatedBuffer.set(value, loaded);
+                }
+                else {
+                    // Fall back if content-length was smaller than the actual body size.
+                    if (loaded > 0) {
+                        fallbackChunks.push(preallocatedBuffer.subarray(0, loaded));
+                    }
+                    fallbackChunks.push(value);
+                    preallocatedBuffer = null;
+                }
+            }
+            else {
+                fallbackChunks.push(value);
+            }
             loaded += value.byteLength;
             onProgress({
                 loaded,
@@ -33,13 +64,10 @@ async function fetchWithDownloadProgress(response, onProgress) {
     finally {
         reader.releaseLock();
     }
-    const result = new Uint8Array(loaded);
-    let offset = 0;
-    for (const chunk of chunks) {
-        result.set(chunk, offset);
-        offset += chunk.byteLength;
+    if (preallocatedBuffer) {
+        return toOwnedArrayBuffer(preallocatedBuffer, loaded);
     }
-    return result.buffer;
+    return toOwnedArrayBuffer(mergeChunks(fallbackChunks, loaded));
 }
 /**
  * Creates a Request body wrapper that tracks upload progress.
