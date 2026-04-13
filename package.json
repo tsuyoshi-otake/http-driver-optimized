@@ -1,7 +1,7 @@
 {
-  "name": "@alvin0/http-driver",
+  "name": "@tsuyoshi-otake/http-driver-optimized",
   "version": "0.4.0",
-  "description": "HttpDriver helps manage APIs on a per-service basis with direct Axios and Fetch support.",
+  "description": "http-driver-optimized is a fully typed per-service HTTP client for Axios and Fetch.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -31,8 +31,11 @@
     "network",
     "http"
   ],
-  "author": "alvin0",
+  "author": "tsuyoshi-otake",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "rm -rf dist && tsc",
     "start": "node dist/index.js",

@@ -49,7 +49,7 @@ HttpDriver is a TypeScript library for building per-service HTTP clients with a 
 - SWR integration example
 
 ## Deliverables
-- NPM package: @alvin0/http-driver
+- NPM package: @tsuyoshi-otake/http-driver-optimized
 - Public API surface:
   - DriverBuilder for configuration and .build()
   - Driver instance methods: execService, execServiceByFetch, getInfoURL

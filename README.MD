@@ -1,19 +1,21 @@
-# HttpDriver
+# http-driver-optimized
 
 ![Test Coverage](https://img.shields.io/badge/Coverage-100%25-brightgreen.svg)
 
 Fully typed, per-service HTTP client for Axios and Fetch with built-in retry, caching, deduplication, middleware, and observability.
 
+Repository and npm package name: `@tsuyoshi-otake/http-driver-optimized`.
+
 ## Install
 
 ```bash
-npm install @alvin0/http-driver
+npm install @tsuyoshi-otake/http-driver-optimized
 ```
 
 ## Quick Start
 
 ```ts
-import { DriverBuilder, MethodAPI } from "@alvin0/http-driver";
+import { DriverBuilder, MethodAPI } from "@tsuyoshi-otake/http-driver-optimized";
 
 const api = new DriverBuilder()
   .withBaseURL("https://api.example.com")
@@ -78,7 +80,7 @@ interface ResponseFormat<T = unknown> {
 ## Service Definition
 
 ```ts
-import { MethodAPI, type ServiceApi } from "@alvin0/http-driver";
+import { MethodAPI, type ServiceApi } from "@tsuyoshi-otake/http-driver-optimized";
 
 const services: ServiceApi[] = [
   { id: "posts.list", url: "posts", method: MethodAPI.get },
@@ -136,7 +138,7 @@ const api = new DriverBuilder()
 ```
 
 Only successful responses are cached. Error responses are never cached.
-The cache has a max size of 1000 entries with LRU eviction and automatic periodic cleanup of expired entries.
+The cache has a max size of 1000 entries with oldest-entry eviction (in insertion order) and automatic periodic cleanup of expired entries.
 
 ```ts
 interface CacheConfig {
@@ -169,7 +171,7 @@ Timeout uses `AbortSignal.timeout()` when available (Node 17.3+, modern browsers
 Onion-model pipeline. Each middleware wraps the next.
 
 ```ts
-import type { MiddlewareContext, MiddlewareFn } from "@alvin0/http-driver";
+import type { MiddlewareContext, MiddlewareFn } from "@tsuyoshi-otake/http-driver-optimized";
 
 const logger: MiddlewareFn = async (ctx, next) => {
   console.log(`→ ${ctx.method.toUpperCase()} ${ctx.url}`);
@@ -371,8 +373,8 @@ const info = api.getInfoURL(
 ## Standalone httpClientFetch
 
 ```ts
-import { httpClientFetch } from "@alvin0/http-driver/dist/utils";
-import { MethodAPI } from "@alvin0/http-driver";
+import { httpClientFetch } from "@tsuyoshi-otake/http-driver-optimized/dist/utils";
+import { MethodAPI } from "@tsuyoshi-otake/http-driver-optimized";
 
 const res = await httpClientFetch({
   url: "https://example.com/posts/{id}",
@@ -384,6 +386,8 @@ const res = await httpClientFetch({
 ## Multipart
 
 When `Content-Type` is `multipart/form-data`, the library removes the explicit header so the platform sets the boundary automatically. The payload is converted to FormData using bracket notation for nested objects (`parent[child]`) and arrays (`items[0]`), which is compatible with most backend frameworks (Express, Django, Rails, Spring).
+
+During conversion, nullish plain-object properties are skipped inline instead of cloning the payload first. Primitive array values are still stringified so index-based field layout stays stable.
 
 ## SSE Streaming
 
@@ -438,7 +442,7 @@ Returns `NDJSONStreamResponseFormat<T>` with `stream: AsyncGenerator<T>` and `ab
 Convenience wrapper over `execService` / `execServiceByFetch`:
 
 ```ts
-import { createGraphQLClient } from "@alvin0/http-driver";
+import { createGraphQLClient } from "@tsuyoshi-otake/http-driver-optimized";
 
 const services = [
   { id: "graphql", url: "graphql", method: MethodAPI.post },
@@ -466,7 +470,7 @@ const gqlFetch = createGraphQLClient(api, "graphql", { useFetch: true });
 Standalone utilities for progress tracking with Fetch:
 
 ```ts
-import { fetchWithDownloadProgress, createUploadProgressBody } from "@alvin0/http-driver";
+import { fetchWithDownloadProgress, createUploadProgressBody } from "@tsuyoshi-otake/http-driver-optimized";
 
 // Download progress
 const res = await fetch("https://example.com/large-file.zip");
@@ -483,13 +487,14 @@ await fetch("https://example.com/upload", { method: "POST", body });
 ```
 
 `percent` is -1 when total size is unknown.
+`fetchWithDownloadProgress()` returns an `ArrayBuffer`. When `Content-Length` is present, the helper preallocates a single output buffer; if the header is missing or inaccurate, it falls back safely and still returns the bytes actually read.
 
 ## WebSocket
 
 Lightweight wrapper with auto-reconnect and typed messages:
 
 ```ts
-import { createWebSocketClient } from "@alvin0/http-driver";
+import { createWebSocketClient } from "@tsuyoshi-otake/http-driver-optimized";
 
 const ws = createWebSocketClient({
   url: "wss://api.example.com/ws",
@@ -516,7 +521,7 @@ console.log(ws.state); // "connecting" | "open" | "closing" | "closed"
 
 ```ts
 import useSWR from "swr";
-import type { ResponseFormat } from "@alvin0/http-driver";
+import type { ResponseFormat } from "@tsuyoshi-otake/http-driver-optimized";
 
 // Generic fetcher
 const axiosFetcher = <T>(idService: { id: string; params?: Record<string, string | number> }) =>
@@ -575,7 +580,7 @@ export function useCreateUser() {
 
 ```ts
 import { useState, useEffect } from "react";
-import type { ResponseFormat } from "@alvin0/http-driver";
+import type { ResponseFormat } from "@tsuyoshi-otake/http-driver-optimized";
 
 export function useService<T>(
   idService: { id: string; params?: Record<string, string | number> } | null,
@@ -615,7 +620,7 @@ function UserList() {
 
 ```ts
 import { ref, watchEffect } from "vue";
-import type { ResponseFormat } from "@alvin0/http-driver";
+import type { ResponseFormat } from "@tsuyoshi-otake/http-driver-optimized";
 
 export function useService<T>(
   idService: () => { id: string; params?: Record<string, string | number> } | null
@@ -658,7 +663,7 @@ const adminApi = new DriverBuilder()
 For maintainability and strong typing, define service IDs as an enum with a namespaced pattern: `v{version}.{domain}.{resource}.{action}`
 
 ```ts
-import { MethodAPI, type ServiceApi } from "@alvin0/http-driver";
+import { MethodAPI, type ServiceApi } from "@tsuyoshi-otake/http-driver-optimized";
 
 export enum GameServiceIds {
   List = "v1.admin.games.list",
@@ -765,11 +770,30 @@ npm run start:example
 
 Entry point: `example/index.ts`
 
+## Benchmarks
+
+```bash
+npm run bench:optimizations
+npm run bench:memory
+npm run bench:memory:formdata
+```
+
+- `bench:optimizations`: hot-path runtime microbenchmarks for driver execution and stream parsing
+- `bench:memory`: compares legacy vs optimized download buffering for known-size and unknown-size responses
+- `bench:memory:formdata`: compares legacy vs optimized multipart FormData traversal and clone overhead
+
 ## License
 
 MIT
 
-## Author
+## Credits
 
+Original project:
 Châu Lâm Đình Ái (alvin0)
 GitHub: https://github.com/alvin0
+
+Fork maintainer:
+tsuyoshi-otake
+GitHub: https://github.com/tsuyoshi-otake
+
+This repository is a maintained fork of `alvin0/http-driver`.

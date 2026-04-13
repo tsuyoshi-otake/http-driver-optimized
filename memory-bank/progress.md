@@ -4,6 +4,7 @@ Updated: 2026-04-13
 
 ## Current Status Summary
 - **REPO RENAMED**: GitHub origin is now `tsuyoshi-otake/http-driver-optimized`
+- **PACKAGE RENAME PREPARED**: npm metadata now targets `@tsuyoshi-otake/http-driver-optimized`
 - **ALL TESTS PASSING**: 416 tests pass with 100% coverage
 - **BENCHMARK HARNESS ADDED**: `npm run bench:optimizations` measures driver and stream hot paths
 - **MEMORY BENCHMARK HARNESS ADDED**: `npm run bench:memory` measures retained download-buffer size
@@ -72,7 +73,8 @@ Updated: 2026-04-13
 - **RESOLVED**: Eager sanitized-payload cloning during multipart FormData conversion
 
 ## Recent Decisions
-- Keep the NPM package name as `@alvin0/http-driver` for now and only rename the GitHub repository / metadata to `http-driver-optimized`
+- Publish under `@tsuyoshi-otake/http-driver-optimized` with `publishConfig.access = public`
+- npm publish is currently blocked only by missing npm CLI authentication on this machine
 - Prioritize explicit responseType over content-type auto-detection in fetch responses
 - Maintain full backward compatibility for JSON responses
 - Keep strict JSON in Fetch for now; document override via [`withAddTransformResponseFetch()`](../src/index.ts:365).

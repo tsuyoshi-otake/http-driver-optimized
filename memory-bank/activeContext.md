@@ -42,7 +42,15 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
   - GitHub repo was moved to `tsuyoshi-otake/http-driver-optimized`
   - Local `origin` now points to `https://github.com/tsuyoshi-otake/http-driver-optimized.git`
   - [`package.json`](../package.json) repository, bugs, and homepage URLs now target the renamed repo
-  - NPM package name remains `@alvin0/http-driver` to avoid an unrequested breaking publish-name change
+  - The publish target is now `@tsuyoshi-otake/http-driver-optimized`
+
+- **NPM Publish Preparation (IN PROGRESS)**:
+  - [`package.json`](../package.json) package name was changed to `@tsuyoshi-otake/http-driver-optimized`
+  - [`package.json`](../package.json) now sets `publishConfig.access = "public"` for first-time scoped publish
+  - [`README.MD`](../README.MD) install/import examples were updated to the new package name
+  - [`package-lock.json`](../package-lock.json) was regenerated to match the package rename and current version
+  - `npm test`, `npm run build`, and `npm pack --dry-run --json` all passed after the rename
+  - `npm publish` is currently blocked by missing npm CLI authentication on this machine (`ENEEDAUTH`)
 
 - **Performance Optimization Cycle (COMPLETED)**:
   - **Benchmark Harness**:
