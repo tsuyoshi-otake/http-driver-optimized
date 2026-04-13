@@ -16,7 +16,7 @@ import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
-from scripts.utils import parse_skill_md
+from scripts.utils import parse_skill_md, resolve_user_path
 
 
 def find_project_root() -> Path:
@@ -269,8 +269,24 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Print progress to stderr")
     args = parser.parse_args()
 
-    eval_set = json.loads(Path(args.eval_set).read_text())
-    skill_path = Path(args.skill_path)
+    try:
+        eval_set_path = resolve_user_path(
+            args.eval_set,
+            expected="file",
+            must_exist=True,
+            label="eval set file",
+        )
+        skill_path = resolve_user_path(
+            args.skill_path,
+            expected="dir",
+            must_exist=True,
+            label="skill path",
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    eval_set = json.loads(eval_set_path.read_text())
 
     if not (skill_path / "SKILL.md").exists():
         print(f"Error: No SKILL.md found at {skill_path}", file=sys.stderr)

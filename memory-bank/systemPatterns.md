@@ -21,7 +21,7 @@ graph TD;
   A[ServiceApi[]] --> B[compileService / compileUrlByService];
   B --> C[Driver.execService()];
   B --> D[Driver.execServiceByFetch()];
-  C --> E[apisauce (axios) + interceptors/transforms];
+  C --> E[axios + interceptors/transforms];
   D --> F[fetch + payload shaping];
   E --> G[responseFormat()];
   F --> G[responseFormat()];
@@ -53,12 +53,12 @@ Pattern:
   - Axios interceptors (error handling)
   - Fetch request/response transforms
 
-The `.build()` method materializes a `Driver` and returns the apisauce instance extended with convenience methods:
+The `.build()` method materializes a `Driver` and returns the configured Axios instance extended with convenience methods:
 - Axios path: [`execService()`](../src/index.ts:109)
 - Fetch path: [`execServiceByFetch()`](../src/index.ts:164)
 - URL inspection: [`getInfoURL()`](../src/index.ts:274)
 
-Pattern: Monkey-patching an `ApisauceInstance` with additional methods via `Object.assign` to keep a unified client surface.
+Pattern: Monkey-patching an `AxiosInstance` with additional methods via `Object.assign` to keep a unified client surface.
 
 ### 3) Consistent response shape
 - Canonical type: [`interface ResponseFormat`](../src/utils/driver-contracts.ts:95)
@@ -70,7 +70,7 @@ Pattern: All call sites can branch on `res.ok` and inspect `status`, `data`, `he
 ### 4) Axios vs Fetch parity
 - Axios path
   - Resolution: internal map-backed resolver in [`src/index.ts`](../src/index.ts), then [`compileUrl()`](../src/utils/index.ts:146)
-  - Execution via apisauce/axios inside [`execService()`](../src/index.ts:109)
+  - Execution via the internal Axios instance inside [`execService()`](../src/index.ts:109)
   - Transforms/interceptors (see Extensibility Points)
 - Fetch path
   - Resolution: internal map-backed resolver in [`src/index.ts`](../src/index.ts), then [`compileUrl()`](../src/utils/index.ts:146)
@@ -118,7 +118,7 @@ Pattern: For large downloads with a trustworthy `Content-Length`, prefer single-
 
 ### 6) Error handling and normalization
 - Axios path:
-  - Delegates to apisauce; interceptors can be injected; any thrown error is normalized
+  - Delegates to the internal Axios instance; interceptors can be injected; any thrown error is normalized
 - Fetch path:
   - Malformed JSON detected and mapped to custom errors
 - Normalization points:
@@ -174,9 +174,9 @@ Decision: Track in activeContext and plan a small refactor to unify names and ad
 Sequence — Axios path:
 1) Caller invokes [`execService()`](../src/index.ts:109) with `{ id, params }` and `payload`
 2) Resolve endpoint: [`compileUrlByService()`](../src/utils/index.ts:84) -> [`compileUrl()`](../src/utils/index.ts:146)
-3) apisauce executes `axiosInstance[method](pathname, payload, options)`
+3) Axios executes `axiosInstance[method](pathname, payload, options)`
 4) Interceptors/transforms run
-5) Response normalized to [`ResponseFormat`](../src/utils/driver-contracts.ts:95) (by apisauce interface contract)
+5) Response normalized to [`ResponseFormat`](../src/utils/driver-contracts.ts:95) via the internal Axios adapter
 
 Sequence — Fetch path:
 1) Caller invokes [`execServiceByFetch()`](../src/index.ts:164)
@@ -236,7 +236,7 @@ Pattern: Keep driver-independent helpers public to enable testing and advanced u
 2) Error normalization parity:
    - Ensure axios path reliably maps timeout/network errors similarly to fetch path.
 3) Duration on Axios:
-   - Fetch path computes duration; confirm axios path provides comparable duration via apisauce or add explicit timing if necessary.
+   - Fetch path computes duration; confirm axios path provides comparable duration or add explicit timing if necessary.
 4) Type alignment for headers:
    - `ResponseFormat.headers` is typed as `Headers | null`; axios returns different shape. Validate downcast or adapt in normalization.
 

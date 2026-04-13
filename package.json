@@ -46,8 +46,8 @@
     "bench:memory:formdata": "node --expose-gc bench/memory-formdata.cjs"
   },
   "dependencies": {
-    "axios": "^1.13.2",
-    "qs": "^6.14.0"
+    "axios": "^1.15.0",
+    "qs": "^6.14.2"
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",

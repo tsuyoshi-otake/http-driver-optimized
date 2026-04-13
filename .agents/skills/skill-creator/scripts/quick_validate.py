@@ -4,14 +4,22 @@ Quick validation script for skills - minimal version
 """
 
 import sys
-import os
 import re
 import yaml
-from pathlib import Path
+
+from scripts.utils import resolve_user_path
 
 def validate_skill(skill_path):
     """Basic validation of a skill"""
-    skill_path = Path(skill_path)
+    try:
+        skill_path = resolve_user_path(
+            skill_path,
+            expected="dir",
+            must_exist=True,
+            label="skill directory",
+        )
+    except ValueError as exc:
+        return False, str(exc)
 
     # Check SKILL.md exists
     skill_md = skill_path / 'SKILL.md'

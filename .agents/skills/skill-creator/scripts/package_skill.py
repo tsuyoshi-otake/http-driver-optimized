@@ -12,9 +12,15 @@ Example:
 
 import fnmatch
 import sys
-import zipfile
 from pathlib import Path
+
 from scripts.quick_validate import validate_skill
+from scripts.utils import (
+    allowed_workspace_roots,
+    open_zipfile_within,
+    resolve_child_path,
+    resolve_user_path,
+)
 
 # Patterns to exclude when packaging skills.
 EXCLUDE_DIRS = {"__pycache__", "node_modules"}
@@ -50,7 +56,16 @@ def package_skill(skill_path, output_dir=None):
     Returns:
         Path to the created .skill file, or None if error
     """
-    skill_path = Path(skill_path).resolve()
+    try:
+        skill_path = resolve_user_path(
+            skill_path,
+            expected="dir",
+            must_exist=True,
+            label="skill folder",
+        )
+    except ValueError as exc:
+        print(f"❌ Error: {exc}")
+        return None
 
     # Validate skill folder exists
     if not skill_path.exists():
@@ -79,16 +94,37 @@ def package_skill(skill_path, output_dir=None):
     # Determine output location
     skill_name = skill_path.name
     if output_dir:
-        output_path = Path(output_dir).resolve()
+        try:
+            output_path = resolve_user_path(
+                output_dir,
+                expected="dir",
+                must_exist=False,
+                allowed_roots=allowed_workspace_roots(skill_path.parent),
+                label="output directory",
+            )
+        except ValueError as exc:
+            print(f"❌ Error: {exc}")
+            return None
         output_path.mkdir(parents=True, exist_ok=True)
     else:
-        output_path = Path.cwd()
+        output_path = Path.cwd().resolve()
 
-    skill_filename = output_path / f"{skill_name}.skill"
+    skill_filename = resolve_child_path(
+        output_path / f"{skill_name}.skill",
+        expected="file",
+        must_exist=False,
+        allowed_root=output_path,
+        label="package file",
+    )
 
     # Create the .skill file (zip format)
     try:
-        with zipfile.ZipFile(skill_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        with open_zipfile_within(
+            output_path,
+            skill_filename,
+            mode="w",
+            label="package file",
+        ) as zipf:
             # Walk through the skill directory, excluding build artifacts
             for file_path in skill_path.rglob('*'):
                 if not file_path.is_file():

@@ -10,13 +10,13 @@ This document captures technologies, dependencies, scripts, environment assumpti
 - Module output: `dist/` via `tsc` — entry: [`package.json`](../package.json)
 
 ## Core Libraries
-- HTTP (Axios via apisauce): `apisauce@^3.1.0`, `axios@^1.7.7`
+- HTTP: `axios@^1.15.0`
   - Driver entry and builder: [`src/index.ts`](../src/index.ts)
   - Execution surfaces:
     - Axios path: [`execService()`](../src/index.ts:109)
     - Fetch path: [`execServiceByFetch()`](../src/index.ts:164)
     - URL inspection: [`getInfoURL()`](../src/index.ts:274)
-- Query string serialization: `qs@^6.13.0`
+- Query string serialization: `qs@^6.14.2`
   - URL compilation utilities:
     - [`compileUrlByService()`](../src/utils/index.ts:84)
     - [`compileUrl()`](../src/utils/index.ts:146)
@@ -71,16 +71,20 @@ This document captures technologies, dependencies, scripts, environment assumpti
   - Benchmark harness: [`bench/optimizations.cjs`](../bench/optimizations.cjs)
   - Memory benchmark harness: [`bench/memory-progress.cjs`](../bench/memory-progress.cjs)
   - Multipart memory benchmark harness: [`bench/memory-formdata.cjs`](../bench/memory-formdata.cjs)
+- Auxiliary repo tooling:
+  - Skill-creator helper scripts live under [`.agents/skills/skill-creator/scripts/`](../.agents/skills/skill-creator/scripts)
+  - Shared path validation for those CLIs now lives in [`.agents/skills/skill-creator/scripts/utils.py`](../.agents/skills/skill-creator/scripts/utils.py)
 
 ## Build and Distribution
 - Compiler: TypeScript (`tsc`) — see [`tsconfig.json`](../tsconfig.json)
+- `tsconfig.json` now sets `rootDir` explicitly to `src/` so TypeScript 6+ does not infer the source root from `outDir`
 - Output: `dist/` (CommonJS/ES settings per tsconfig)
 - Babel present for compatibility (presets in [`babel.config.json`](../babel.config.json)) — not part of main build path unless integrated in consumer tooling.
 
 ## Environment Assumptions
 - Node.js 18+ recommended (native Fetch). For Node <18, bring a WHATWG-compliant `fetch` polyfill at app level.
 - Browsers: modern environments with `fetch`, `FormData`, `Headers`, etc.
-- CORS and credentials: Driver defaults `withCredentials: true` for Axios via apisauce in [`new Driver(config)`](../src/index.ts:39).
+- CORS and credentials: Driver defaults `withCredentials: true` for Axios in [`new Driver(config)`](../src/index.ts:39).
 
 ## Known Technical Considerations
 - Async transform naming drift:
@@ -94,7 +98,7 @@ This document captures technologies, dependencies, scripts, environment assumpti
 - Download buffering:
   - [`fetchWithDownloadProgress()`](../src/utils/progress.ts) now preallocates a single buffer when `Content-Length` is known and falls back only when the header is inaccurate.
 - Axios vs Fetch parity:
-  - Axios path relies on apisauce behavior and interceptors; Fetch path explicitly measures `duration` and parses text->JSON.
+  - Axios path relies on the internal Axios adapter and interceptors; Fetch path explicitly measures `duration` and parses text->JSON.
 
 ## Example Clients
 - JSONPlaceholder driver example: [`example/src/api-clients/jsonplaceholder-driver/driver.ts`](../example/src/api-clients/jsonplaceholder-driver/driver.ts), services in [`post-services.ts`](../example/src/api-clients/jsonplaceholder-driver/post-services.ts)

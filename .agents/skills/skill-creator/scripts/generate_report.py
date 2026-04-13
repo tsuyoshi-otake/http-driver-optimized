@@ -12,6 +12,8 @@ import json
 import sys
 from pathlib import Path
 
+from scripts.utils import allowed_workspace_roots, resolve_user_path
+
 
 def generate_html(data: dict, auto_refresh: bool = False, skill_name: str = "") -> str:
     """Generate HTML report from loop output data. If auto_refresh is True, adds a meta refresh tag."""
@@ -308,16 +310,42 @@ def main():
     parser.add_argument("--skill-name", default="", help="Skill name to include in the report title")
     args = parser.parse_args()
 
+    input_path = None
+    output_path = None
+
+    try:
+        if args.input != "-":
+            input_path = resolve_user_path(
+                args.input,
+                expected="file",
+                must_exist=True,
+                label="input file",
+            )
+
+        if args.output:
+            extra_roots = [input_path.parent] if input_path else []
+            output_path = resolve_user_path(
+                args.output,
+                expected="file",
+                must_exist=False,
+                allowed_roots=allowed_workspace_roots(*extra_roots),
+                label="output file",
+            )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     if args.input == "-":
         data = json.load(sys.stdin)
     else:
-        data = json.loads(Path(args.input).read_text())
+        data = json.loads(input_path.read_text())
 
     html_output = generate_html(data, skill_name=args.skill_name)
 
-    if args.output:
-        Path(args.output).write_text(html_output)
-        print(f"Report written to {args.output}", file=sys.stderr)
+    if output_path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(html_output)
+        print(f"Report written to {output_path}", file=sys.stderr)
     else:
         print(html_output)
 

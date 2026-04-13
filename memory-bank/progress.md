@@ -5,6 +5,7 @@ Updated: 2026-04-13
 ## Current Status Summary
 - **REPO RENAMED**: GitHub origin is now `tsuyoshi-otake/http-driver-optimized`
 - **PACKAGE RENAME PREPARED**: npm metadata now targets `@tsuyoshi-otake/http-driver-optimized`
+- **TOOLING HARDENED**: `tsconfig.json` now sets an explicit `rootDir`, and skill-creator CLI scripts now validate user-supplied filesystem paths against workspace roots before file access
 - **ALL TESTS PASSING**: 416 tests pass with 100% coverage
 - **BENCHMARK HARNESS ADDED**: `npm run bench:optimizations` measures driver and stream hot paths
 - **MEMORY BENCHMARK HARNESS ADDED**: `npm run bench:memory` measures retained download-buffer size
@@ -21,6 +22,10 @@ Updated: 2026-04-13
 - **Recent fixes**: Enhanced fetch response handling, fixed empty test files, achieved high test coverage
 
 ## What Works
+- TypeScript builds with an explicit `rootDir` in [`tsconfig.json`](../tsconfig.json), avoiding TS 6's source-root warning while preserving the current `dist/` layout.
+- Skill-creator support scripts now share a central path guard in [`.agents/skills/skill-creator/scripts/utils.py`](../.agents/skills/skill-creator/scripts/utils.py) before opening, reading, writing, or packaging CLI-supplied paths.
+- The two remaining Snyk-sensitive sinks now also revalidate derived file paths immediately before file reads/writes in [`aggregate_benchmark.py`](../.agents/skills/skill-creator/scripts/aggregate_benchmark.py) and archive creation in [`package_skill.py`](../.agents/skills/skill-creator/scripts/package_skill.py).
+- The final sink operations now go through dedicated validated wrappers in [`.agents/skills/skill-creator/scripts/utils.py`](../.agents/skills/skill-creator/scripts/utils.py), rather than calling `open(...)`, `json.dump(...)`, or `zipfile.ZipFile(...)` directly from those CLI entry points.
 - Driver construction via [`class DriverBuilder`](../src/index.ts:305) producing a client with: [`execService()`](../src/index.ts:109), [`execServiceByFetch()`](../src/index.ts:164), [`getInfoURL()`](../src/index.ts:274).
 - Runtime service resolution no longer recompiles the same service multiple times per request.
 - Cache and dedup now share the same request identity helper via [`src/utils/request-key.ts`](../src/utils/request-key.ts).
@@ -48,7 +53,7 @@ Updated: 2026-04-13
 - Verify builder methods [`withAddAsyncRequestTransformAxios()`](../src/index.ts:321) and [`withAddAsyncResponseTransformAxios()`](../src/index.ts:329) wire to those fields; add tests.
 
 2) Optional: Normalize Axios responses to ResponseFormat
-- In [`execService()`](../src/index.ts:109), adapt apisauce ApiResponse via [`responseFormat()`](../src/utils/index.ts:112) rather than casting.
+- In [`execService()`](../src/index.ts:109), adapt Axios responses via [`responseFormat()`](../src/utils/index.ts:112) rather than casting.
 
 3) Optional: Method enum comparison in getInfoURL
 - Replace string literal 'get' with [`MethodAPI.get`](../src/utils/driver-contracts.ts:3) check inside [`getInfoURL()`](../src/index.ts:274).
@@ -63,6 +68,8 @@ Updated: 2026-04-13
 - [`fetchWithDownloadProgress()`](../src/utils/progress.ts) now optimizes known-size responses, but unknown-size responses still require chunk accumulation before the final merge.
 
 ## Current Issues
+- **RESOLVED**: TypeScript `outDir` / inferred source-root warning by setting explicit `rootDir`
+- **RESOLVED**: Repeated Snyk path-traversal findings across skill-creator CLI scripts by centralizing CLI path validation
 - **RESOLVED**: All major test failures have been fixed
 - **RESOLVED**: Empty test file issue fixed
 - **RESOLVED**: Blob/ArrayBuffer/Text response handling in fetch
@@ -85,6 +92,7 @@ Updated: 2026-04-13
 - Keep public helper behavior stable while optimizing runtime-only code paths behind the `Driver` class.
 
 ## Next Actions
+- Monitor for any remaining static-analysis findings in `.agents/skills/skill-creator/scripts/` after the shared path guard rollout
 - **COMPLETED**: All test failures have been resolved
 - **COMPLETED**: Enhanced fetch response type handling
 - **COMPLETED**: Added benchmark harness and landed first round of performance optimizations

@@ -41,6 +41,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from scripts.utils import (
+    allowed_workspace_roots,
+    read_json_within,
+    resolve_child_path,
+    resolve_user_path,
+    write_json_within,
+    write_text_within,
+)
+
 
 def calculate_stats(values: list[float]) -> dict:
     """Calculate mean, stddev, min, max for a list of values."""
@@ -71,6 +80,13 @@ def load_run_results(benchmark_dir: Path) -> dict:
     Returns dict keyed by config name (e.g. "with_skill"/"without_skill",
     or "new_skill"/"old_skill"), each containing a list of run results.
     """
+    benchmark_dir = resolve_user_path(
+        benchmark_dir,
+        expected="dir",
+        must_exist=True,
+        label="benchmark directory",
+    )
+
     # Support both layouts: eval dirs directly under benchmark_dir, or under runs/
     runs_dir = benchmark_dir / "runs"
     if runs_dir.exists():
@@ -87,8 +103,11 @@ def load_run_results(benchmark_dir: Path) -> dict:
         metadata_path = eval_dir / "eval_metadata.json"
         if metadata_path.exists():
             try:
-                with open(metadata_path) as mf:
-                    eval_id = json.load(mf).get("eval_id", eval_idx)
+                eval_id = read_json_within(
+                    benchmark_dir,
+                    metadata_path,
+                    label="eval metadata file",
+                ).get("eval_id", eval_idx)
             except (json.JSONDecodeError, OSError):
                 eval_id = eval_idx
         else:
@@ -117,8 +136,11 @@ def load_run_results(benchmark_dir: Path) -> dict:
                     continue
 
                 try:
-                    with open(grading_file) as f:
-                        grading = json.load(f)
+                    grading = read_json_within(
+                        benchmark_dir,
+                        grading_file,
+                        label="grading file",
+                    )
                 except json.JSONDecodeError as e:
                     print(f"Warning: Invalid JSON in {grading_file}: {e}")
                     continue
@@ -139,8 +161,11 @@ def load_run_results(benchmark_dir: Path) -> dict:
                 timing_file = run_dir / "timing.json"
                 if result["time_seconds"] == 0.0 and timing_file.exists():
                     try:
-                        with open(timing_file) as tf:
-                            timing_data = json.load(tf)
+                        timing_data = read_json_within(
+                            benchmark_dir,
+                            timing_file,
+                            label="timing file",
+                        )
                         result["time_seconds"] = timing_data.get("total_duration_seconds", 0.0)
                         result["tokens"] = timing_data.get("total_tokens", 0)
                     except json.JSONDecodeError:
@@ -362,26 +387,65 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.benchmark_dir.exists():
-        print(f"Directory not found: {args.benchmark_dir}")
+    try:
+        benchmark_dir = resolve_user_path(
+            args.benchmark_dir,
+            expected="dir",
+            must_exist=True,
+            label="benchmark directory",
+        )
+        output_json = (
+            resolve_user_path(
+                args.output,
+                expected="file",
+                must_exist=False,
+                allowed_roots=allowed_workspace_roots(benchmark_dir),
+                label="output file",
+            )
+            if args.output
+            else benchmark_dir / "benchmark.json"
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}")
         sys.exit(1)
 
     # Generate benchmark
-    benchmark = generate_benchmark(args.benchmark_dir, args.skill_name, args.skill_path)
+    benchmark = generate_benchmark(benchmark_dir, args.skill_name, args.skill_path)
 
     # Determine output paths
-    output_json = args.output or (args.benchmark_dir / "benchmark.json")
     output_md = output_json.with_suffix(".md")
+    output_json = resolve_child_path(
+        output_json,
+        expected="file",
+        must_exist=False,
+        allowed_root=output_json.parent,
+        label="benchmark json output",
+    )
+    output_md = resolve_child_path(
+        output_md,
+        expected="file",
+        must_exist=False,
+        allowed_root=output_md.parent,
+        label="benchmark markdown output",
+    )
 
     # Write benchmark.json
-    with open(output_json, "w") as f:
-        json.dump(benchmark, f, indent=2)
+    write_json_within(
+        output_json.parent,
+        output_json,
+        benchmark,
+        label="benchmark json output",
+    )
     print(f"Generated: {output_json}")
 
     # Write benchmark.md
     markdown = generate_markdown(benchmark)
-    with open(output_md, "w") as f:
-        f.write(markdown)
+    write_text_within(
+        output_md.parent,
+        output_md,
+        markdown,
+        label="benchmark markdown output",
+    )
     print(f"Generated: {output_md}")
 
     # Print summary

@@ -5,6 +5,7 @@
     "module": "NodeNext" /* Specify module code generation: 'none', 'commonjs', 'amd', 'system', 'umd', 'es2015', 'es2020', or 'ESNext'. */,
     "moduleResolution": "NodeNext",
     "declaration": true /* Generates corresponding '.d.ts' file. */,
+    "rootDir": "./src" /* Keep emitted files rooted under src when writing to dist. */,
     "outDir": "./dist" /* Redirect output structure to the directory. */,
     "strict": true,
     "skipLibCheck": true,

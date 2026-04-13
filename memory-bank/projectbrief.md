@@ -1,7 +1,7 @@
 # Project Brief — HttpDriver
 
 ## Overview
-HttpDriver is a TypeScript library for building per-service HTTP clients with a consistent, typed interface. It unifies Axios (via apisauce) and the Fetch API, standardizes responses, and provides hooks for request/response transforms and error interception. The library targets maintainable API layers with clear service definitions and a builder pattern for configuration.
+HttpDriver is a TypeScript library for building per-service HTTP clients with a consistent, typed interface. It unifies Axios and the Fetch API, standardizes responses, and provides hooks for request/response transforms and error interception. The library targets maintainable API layers with clear service definitions and a builder pattern for configuration.
 
 ## Core Objectives
 - Provide a per-service API layer that composes a driver from:
@@ -17,7 +17,7 @@ HttpDriver is a TypeScript library for building per-service HTTP clients with a 
 ## In Scope
 - Driver configuration and lifecycle.
 - Service compilation (templated paths, query param injection).
-- Axios integration via apisauce, including interceptors and transforms.
+- Axios integration, including interceptors and transforms.
 - Fetch integration with request shaping and response normalization.
 - Consistent error handling and response formatting.
 - Utilities: qs-based query assembly, payload-to-FormData conversion, httpClientFetch helper.
@@ -67,7 +67,7 @@ HttpDriver is a TypeScript library for building per-service HTTP clients with a 
 - TypeScript-first; emits JavaScript for consumption.
 - Browser and Node (Fetch availability must be ensured by consumer in Node).
 - qs used for querystring serialization.
-- apisauce wraps Axios for consistent transform/interceptor API.
+- Axios is used directly for request execution and interceptor wiring.
 
 ## Risks and Mitigations
 - Risk: Divergence between Axios and Fetch paths.

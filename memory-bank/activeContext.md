@@ -3,6 +3,8 @@
 This file tracks the current focus, recent changes, decisions, next steps, and active considerations for the HttpDriver project.
 
 ## Current Focus
+- **COMPLETED**: Added explicit TypeScript `rootDir` and hardened skill-creator CLI path handling
+- **COMPLETED**: Upgraded direct production dependencies to patched `axios` / `qs` releases
 - **COMPLETED**: Added repeatable benchmark harness for hot-path measurements
 - **COMPLETED**: Added repeatable memory benchmark harness for download buffering
 - **COMPLETED**: Added repeatable memory benchmark harness for multipart payload conversion
@@ -15,6 +17,23 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
 - All 416 tests now pass successfully with 100% coverage
 
 ## Recent Changes
+- **TypeScript / Tooling Hardening (COMPLETED)**:
+  - Updated [`tsconfig.json`](../tsconfig.json) to set `compilerOptions.rootDir = "./src"` so TypeScript's emitted file layout is explicit alongside `outDir`
+  - Added shared CLI path guards in [`.agents/skills/skill-creator/scripts/utils.py`](../.agents/skills/skill-creator/scripts/utils.py)
+  - Updated the flagged skill-creator scripts to resolve user-supplied input/output paths through the shared helper before reading or writing files
+  - Tightened [`aggregate_benchmark.py`](../.agents/skills/skill-creator/scripts/aggregate_benchmark.py) and [`package_skill.py`](../.agents/skills/skill-creator/scripts/package_skill.py) further so derived file paths are revalidated immediately before `open(...)`, `json.dump(...)`, and `zipfile.ZipFile(...)`
+  - Moved the remaining `aggregate_benchmark.py` and `package_skill.py` file-operation sinks behind dedicated validated wrappers in [`.agents/skills/skill-creator/scripts/utils.py`](../.agents/skills/skill-creator/scripts/utils.py) so static analysis sees the path check and the filesystem operation in the same helper
+  - Verified `npm run build` passes after the `tsconfig.json` change
+  - Verified the patched Python scripts compile under `uv run python -m py_compile`
+  - Smoke-tested the shared path helpers to allow in-repo files, reject `..` escape paths, round-trip JSON, and create a zip archive under an allowed root
+
+- **Security Dependency Upgrade (COMPLETED)**:
+  - Updated [`package.json`](../package.json) to require `axios@^1.15.0`
+  - Updated [`package.json`](../package.json) to require `qs@^6.14.2`
+  - Regenerated [`package-lock.json`](../package-lock.json); current resolved installs are `axios@1.15.0` and `qs@6.15.1`
+  - Verified `npm audit --omit=dev` reports `0` production vulnerabilities after the upgrade
+  - Verified `npm test` still passes with `416/416` tests and `100%` coverage
+
 - **Multipart FormData Memory Optimization (COMPLETED)**:
   - Added [`bench/memory-formdata.cjs`](../bench/memory-formdata.cjs)
   - Added `npm run bench:memory:formdata` in [`package.json`](../package.json)
@@ -188,11 +207,11 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
 
 2) Axios response casting vs normalization
 - Observed
-  - [`execService()`](../src/index.ts:109) returns `result as ResponseFormat`, where `result` is `ApiResponse` from apisauce.
+  - [`execService()`](../src/index.ts:109) previously cast Axios results directly to `ResponseFormat` instead of adapting the Axios response shape explicitly.
 - Risk
   - Type shape differences (e.g., headers) and invariants may diverge from [`ResponseFormat`](../src/utils/driver-contracts.ts:95).
 - Decision
-  - Map `ApiResponse` -> [`ResponseFormat`](../src/utils/driver-contracts.ts:95) via explicit adapter + [`responseFormat()`](../src/utils/index.ts:112), ensuring duration, problem, originalError fields are coherent.
+  - Map the Axios response shape -> [`ResponseFormat`](../src/utils/driver-contracts.ts:95) via explicit adapter + [`responseFormat()`](../src/utils/index.ts:112), ensuring duration, problem, originalError fields are coherent.
 
 3) Fetch JSON strictness
 - Observed
@@ -221,7 +240,7 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
     - `config.addAsyncResponseTransform` inside `addAsyncResponseTransform(...)`
   - Add tests to validate async hooks are invoked.
 - Axios adapter
-  - Implement an adapter mapping apisauce `ApiResponse` to [`ResponseFormat`](../src/utils/driver-contracts.ts:95) in [`execService()`](../src/index.ts:109).
+  - Implement an adapter mapping Axios responses to [`ResponseFormat`](../src/utils/driver-contracts.ts:95) in [`execService()`](../src/index.ts:109).
   - Preserve `duration`, `status`, `data`, and map axios headers appropriately (or omit headers for axios path if incompatible).
 - Minor corrections
   - Use `MethodAPI.get` in [`getInfoURL()`](../src/index.ts:274).
@@ -258,6 +277,11 @@ This file tracks the current focus, recent changes, decisions, next steps, and a
   - Identified async transform naming mismatch and FormData array handling bug.
   - Planned adapter for axios responses to ensure strict [`ResponseFormat`](../src/utils/driver-contracts.ts:95) compliance.
 - 2026-04-13
+  - Added explicit `rootDir` in [`tsconfig.json`](../tsconfig.json) to match the current `src`-rooted emit layout.
+  - Hardened the `.agents/skills/skill-creator/scripts/` CLI entry points so user-supplied paths are resolved against explicit workspace roots before filesystem access.
+  - Verified `npm run build`, `uv run python -m py_compile`, and a direct helper smoke test all pass after the tooling changes.
+  - Upgraded direct production dependencies to patched `axios` / `qs` releases and regenerated the lockfile.
+  - Verified `npm audit --omit=dev` is clean and `npm test` still passes with full coverage.
   - Added `bench/optimizations.cjs` and `npm run bench:optimizations`.
   - Reworked runtime service resolution to use an internal service map and single-pass request compilation.
   - Added shared request-key helpers and reused request identities across cache/dedup paths.

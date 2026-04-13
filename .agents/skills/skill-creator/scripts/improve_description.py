@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.utils import parse_skill_md
+from scripts.utils import parse_skill_md, resolve_user_path
 
 
 def _call_claude(prompt: str, model: str | None, timeout: int = 300) -> str:
@@ -200,15 +200,41 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Print thinking to stderr")
     args = parser.parse_args()
 
-    skill_path = Path(args.skill_path)
+    try:
+        skill_path = resolve_user_path(
+            args.skill_path,
+            expected="dir",
+            must_exist=True,
+            label="skill path",
+        )
+        eval_results_path = resolve_user_path(
+            args.eval_results,
+            expected="file",
+            must_exist=True,
+            label="eval results file",
+        )
+        history_path = (
+            resolve_user_path(
+                args.history,
+                expected="file",
+                must_exist=True,
+                label="history file",
+            )
+            if args.history
+            else None
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     if not (skill_path / "SKILL.md").exists():
         print(f"Error: No SKILL.md found at {skill_path}", file=sys.stderr)
         sys.exit(1)
 
-    eval_results = json.loads(Path(args.eval_results).read_text())
+    eval_results = json.loads(eval_results_path.read_text())
     history = []
-    if args.history:
-        history = json.loads(Path(args.history).read_text())
+    if history_path:
+        history = json.loads(history_path.read_text())
 
     name, _, content = parse_skill_md(skill_path)
     current_description = eval_results["description"]

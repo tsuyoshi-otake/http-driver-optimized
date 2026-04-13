@@ -18,7 +18,7 @@ from pathlib import Path
 from scripts.generate_report import generate_html
 from scripts.improve_description import improve_description
 from scripts.run_eval import find_project_root, run_eval
-from scripts.utils import parse_skill_md
+from scripts.utils import allowed_workspace_roots, parse_skill_md, resolve_user_path
 
 
 def split_eval_set(eval_set: list[dict], holdout: float, seed: int = 42) -> tuple[list[dict], list[dict]]:
@@ -258,8 +258,24 @@ def main():
     parser.add_argument("--results-dir", default=None, help="Save all outputs (results.json, report.html, log.txt) to a timestamped subdirectory here")
     args = parser.parse_args()
 
-    eval_set = json.loads(Path(args.eval_set).read_text())
-    skill_path = Path(args.skill_path)
+    try:
+        eval_set_path = resolve_user_path(
+            args.eval_set,
+            expected="file",
+            must_exist=True,
+            label="eval set file",
+        )
+        skill_path = resolve_user_path(
+            args.skill_path,
+            expected="dir",
+            must_exist=True,
+            label="skill path",
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    eval_set = json.loads(eval_set_path.read_text())
 
     if not (skill_path / "SKILL.md").exists():
         print(f"Error: No SKILL.md found at {skill_path}", file=sys.stderr)
@@ -273,8 +289,19 @@ def main():
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             live_report_path = Path(tempfile.gettempdir()) / f"skill_description_report_{skill_path.name}_{timestamp}.html"
         else:
-            live_report_path = Path(args.report)
+            try:
+                live_report_path = resolve_user_path(
+                    args.report,
+                    expected="file",
+                    must_exist=False,
+                    allowed_roots=allowed_workspace_roots(skill_path.parent, Path(tempfile.gettempdir())),
+                    label="report file",
+                )
+            except ValueError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                sys.exit(1)
         # Open the report immediately so the user can watch
+        live_report_path.parent.mkdir(parents=True, exist_ok=True)
         live_report_path.write_text("<html><body><h1>Starting optimization loop...</h1><meta http-equiv='refresh' content='5'></body></html>")
         webbrowser.open(str(live_report_path))
     else:
@@ -283,7 +310,18 @@ def main():
     # Determine output directory (create before run_loop so logs can be written)
     if args.results_dir:
         timestamp = time.strftime("%Y-%m-%d_%H%M%S")
-        results_dir = Path(args.results_dir) / timestamp
+        try:
+            results_root = resolve_user_path(
+                args.results_dir,
+                expected="dir",
+                must_exist=False,
+                allowed_roots=allowed_workspace_roots(skill_path.parent),
+                label="results directory",
+            )
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        results_dir = results_root / timestamp
         results_dir.mkdir(parents=True, exist_ok=True)
     else:
         results_dir = None
